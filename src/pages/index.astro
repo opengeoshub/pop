@@ -54,6 +54,25 @@
         font-size: 0.78em;
         color: #fee08b;
       }
+      .hud-attrib {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        font-size: 0.7rem;
+        line-height: 1.4;
+        color: var(--muted);
+      }
+      .hud-attrib a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .hud-attrib a:hover {
+        text-decoration: underline;
+      }
+      #hide-panel {
+        margin-top: 10px;
+        width: 100%;
+      }
       #status {
         margin-top: 10px;
         font-size: 0.78rem;
@@ -121,7 +140,7 @@
         font: 700 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
         cursor: pointer;
       }
-      #render-cancel, #exit-full {
+      #render-cancel, #exit-full, #hide-panel {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.06);
@@ -131,11 +150,76 @@
         font: 650 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
         cursor: pointer;
       }
+      .hud-tools {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .hud-tools label {
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      #palette {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.06);
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 5px 28px 5px 9px;
+        font: 650 0.72rem/1.2 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+        background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+          linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+        background-position: calc(100% - 12px) 50%, calc(100% - 7px) 50%;
+        background-size: 5px 5px, 5px 5px;
+        background-repeat: no-repeat;
+      }
+      #palette option {
+        background: #0c121c;
+        color: var(--ink);
+      }
+      #show-panel {
+        appearance: none;
+        position: absolute;
+        z-index: 2;
+        top: 14px;
+        left: 14px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: none;
+        border-radius: 6px;
+        padding: 7px 10px 7px 12px;
+        background: #fff;
+        color: #111;
+        font: 700 0.78rem/1 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+      }
+      #show-panel::after {
+        content: "";
+        width: 0;
+        height: 0;
+        border-left: 4px solid transparent;
+        border-right: 4px solid transparent;
+        border-top: 5px solid #111;
+      }
+      #show-panel[hidden] {
+        display: none;
+      }
+      #show-panel:hover {
+        background: #f2f2f2;
+      }
+      #hide-panel:hover {
+        background: rgba(255,255,255,0.12);
+      }
       .legend {
         position: absolute;
         z-index: 2;
         right: 14px;
-        bottom: 28px;
+        bottom: 38px;
         padding: 10px 12px;
         border-radius: 10px;
         background: var(--panel);
@@ -206,6 +290,7 @@
   </head>
   <body>
     <div id="map"></div>
+    <button type="button" id="show-panel" hidden>Info</button>
     <div class="hud">
       <h1>H3 population</h1>
       <p>
@@ -214,6 +299,16 @@
         <code>z11 → h3_7</code>, <code>z12+ → h3_8</code>
       </p>
       <div id="status">Initializing map...</div>
+      <div class="hud-tools">
+        <label for="palette">Palette</label>
+        <select id="palette" aria-label="Color palette">
+          <option value="spectral">Spectral</option>
+          <option value="magma">Magma</option>
+          <option value="viridis">Viridis</option>
+          <option value="terrain">Terrain</option>
+          <option value="heat">Heat</option>
+        </select>
+      </div>
       <div class="full-load">
         <span>Load full grid:</span>
         <button type="button" data-full-res="5">h3_5</button>
@@ -227,6 +322,15 @@
           <button type="button" id="render-cancel">Cancel</button>
         </div>
       </div>
+      <p class="hud-attrib">
+        Data: <a
+          href="https://data.humdata.org/dataset/kontur-population-dataset-3km"
+          target="_blank"
+          rel="noopener noreferrer"
+        >Kontur Population</a>
+        (CC BY 4.0)
+      </p>
+      <button type="button" id="hide-panel">Hide panel</button>
     </div>
     <div class="legend">
       <strong>Population (log)</strong>

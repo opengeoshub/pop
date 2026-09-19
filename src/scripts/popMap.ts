@@ -32,25 +32,89 @@ function ensurePmtilesProtocol() {
   pmtilesRegistered = true;
 }
 
-const SPECTRAL_HEX = [
-  "#5e4fa2",
-  "#3288bd",
-  "#66c2a5",
-  "#abdda4",
-  "#e6f598",
-  "#fee08b",
-  "#fdae61",
-  "#f46d43",
-  "#d53e4f",
-  "#9e0142",
-];
+/** Free ramps: ColorBrewer Spectral (Apache-2.0); matplotlib Magma/Viridis/Inferno (CC0). */
+export type PaletteId = "spectral" | "magma" | "viridis" | "terrain" | "heat";
 
-const SPECTRAL_RGB: Color[] = SPECTRAL_HEX.map((hex) => {
+const PALETTE_HEX: Record<PaletteId, string[]> = {
+  spectral: [
+    "#5e4fa2",
+    "#3288bd",
+    "#66c2a5",
+    "#abdda4",
+    "#e6f598",
+    "#fee08b",
+    "#fdae61",
+    "#f46d43",
+    "#d53e4f",
+    "#9e0142",
+  ],
+  magma: [
+    "#000004",
+    "#180f3d",
+    "#440f76",
+    "#721f81",
+    "#9e2f7f",
+    "#cd4071",
+    "#f1605d",
+    "#fd9668",
+    "#feca8d",
+    "#fcfdbf",
+  ],
+  viridis: [
+    "#440154",
+    "#482878",
+    "#3e4989",
+    "#31688e",
+    "#26828e",
+    "#1f9e89",
+    "#35b779",
+    "#6ece58",
+    "#b5de2b",
+    "#fde725",
+  ],
+  terrain: [
+    "#333399",
+    "#0077be",
+    "#2ca25f",
+    "#99d594",
+    "#e6f598",
+    "#fee08b",
+    "#fdae61",
+    "#d08b48",
+    "#a6611a",
+    "#f7f7f7",
+  ],
+  heat: [
+    "#000004",
+    "#1b0c41",
+    "#4a0c6b",
+    "#781c6d",
+    "#a52c60",
+    "#cf4446",
+    "#ed6925",
+    "#fb9b06",
+    "#f7d13d",
+    "#fcffa4",
+  ],
+};
+
+function hexToRgb(hex: string): Color {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-});
+}
+
+const PALETTE_RGB: Record<PaletteId, Color[]> = {
+  spectral: PALETTE_HEX.spectral.map(hexToRgb),
+  magma: PALETTE_HEX.magma.map(hexToRgb),
+  viridis: PALETTE_HEX.viridis.map(hexToRgb),
+  terrain: PALETTE_HEX.terrain.map(hexToRgb),
+  heat: PALETTE_HEX.heat.map(hexToRgb),
+};
 
 type HexRow = { hex: string; population: number };
+
+let activePalette: PaletteId = "spectral";
+let paintedRows: HexRow[] | null = null;
 
 function populationToRows(population: Record<string, number>): HexRow[] {
   const rows: HexRow[] = [];
@@ -61,14 +125,29 @@ function populationToRows(population: Record<string, number>): HexRow[] {
 }
 
 function populationColor(pop: number, resolution: H3PopResolution): Color {
+  const ramp = PALETTE_RGB[activePalette];
   const logMax = LOG_MAX_BY_RES[resolution];
   const t = Math.min(1, Math.max(0, Math.log10(Math.max(pop, 1)) / logMax));
-  const s = t * (SPECTRAL_RGB.length - 1);
-  const i = Math.min(Math.floor(s), SPECTRAL_RGB.length - 2);
+  const s = t * (ramp.length - 1);
+  const i = Math.min(Math.floor(s), ramp.length - 2);
   const f = s - i;
-  const [r0, g0, b0] = SPECTRAL_RGB[i];
-  const [r1, g1, b1] = SPECTRAL_RGB[i + 1];
+  const [r0, g0, b0] = ramp[i];
+  const [r1, g1, b1] = ramp[i + 1];
   return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f, 230];
+}
+
+function syncLegendRamp() {
+  const el = document.querySelector<HTMLElement>(".ramp");
+  if (el) el.style.background = `linear-gradient(90deg, ${PALETTE_HEX[activePalette].join(", ")})`;
+}
+
+function setPalette(id: PaletteId) {
+  if (!(id in PALETTE_HEX)) return;
+  activePalette = id;
+  syncLegendRamp();
+  if (paintedRows && paintedResolution != null) {
+    setHexLayer(paintedRows, paintedResolution);
+  }
 }
 
 function setStatus(text: string, tone: "ok" | "warn" | "err" = "ok") {
@@ -123,6 +202,7 @@ type PendingFull = {
 let pendingFull: PendingFull | null = null;
 
 function setHexLayer(rows: HexRow[], resolution: H3PopResolution) {
+  paintedRows = rows;
   paintedResolution = resolution;
   overlay?.setProps({
     layers: [
@@ -140,7 +220,7 @@ function setHexLayer(rows: HexRow[], resolution: H3PopResolution) {
         highPrecision: true,
         coverage: 1,
         updateTriggers: {
-          getFillColor: resolution,
+          getFillColor: `${activePalette}:${resolution}`,
           data: `${resolution}:${rows.length}`,
         },
       }),
@@ -149,6 +229,7 @@ function setHexLayer(rows: HexRow[], resolution: H3PopResolution) {
 }
 
 function clearHexLayer() {
+  paintedRows = null;
   paintedResolution = null;
   overlay?.setProps({ layers: [] });
 }
@@ -165,7 +246,7 @@ function syncFullLoadUi() {
       warn.textContent =
         `Loaded ${pendingFull.rows.length.toLocaleString()} cells` +
         ` in ${Math.round(pendingFull.elapsedMs)}ms. ` +
-        `Drawing the full grid may freeze the browser.`;
+        `Rendering the full grid may freeze the browser for a while.`;
     } else {
       confirm.hidden = true;
       warn.textContent = "";
@@ -368,6 +449,27 @@ function wireFullLoadControls() {
     exitLockedFull();
   });
 
+  const paletteSelect = document.getElementById("palette") as HTMLSelectElement | null;
+  if (paletteSelect) {
+    paletteSelect.value = activePalette;
+    paletteSelect.addEventListener("change", () => {
+      setPalette(paletteSelect.value as PaletteId);
+    });
+  }
+  syncLegendRamp();
+
+  const hud = document.querySelector(".hud");
+  const hideBtn = document.getElementById("hide-panel");
+  const showBtn = document.getElementById("show-panel");
+  hideBtn?.addEventListener("click", () => {
+    hud?.setAttribute("hidden", "");
+    showBtn?.removeAttribute("hidden");
+  });
+  showBtn?.addEventListener("click", () => {
+    hud?.removeAttribute("hidden");
+    showBtn.setAttribute("hidden", "");
+  });
+
   syncFullLoadUi();
 }
 
@@ -389,6 +491,7 @@ export function initPopMap(container: HTMLElement) {
   });
   mapRef = map;
 
+  map.addControl(new maplibregl.FullscreenControl(), "top-right");
   map.addControl(new maplibregl.NavigationControl(), "top-right");
   map.addControl(
     new MapLibreControlZoomHome({
