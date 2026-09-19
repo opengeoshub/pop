@@ -1,0 +1,242 @@
+---
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>H3 Population - spectral</title>
+    <style>
+      :root {
+        --ink: #e8eef5;
+        --muted: #9db0c5;
+        --panel: rgba(12, 18, 28, 0.82);
+        --accent: #66c2a5;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background: #0b111a;
+        color: var(--ink);
+      }
+      #map {
+        position: absolute;
+        inset: 0;
+      }
+      .hud {
+        position: absolute;
+        z-index: 2;
+        top: 14px;
+        left: 14px;
+        max-width: min(240px, calc(100vw - 28px));
+        padding: 14px 16px;
+        border-radius: 10px;
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+      }
+      .hud h1 {
+        margin: 0 0 6px;
+        font-size: 1.05rem;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+      }
+      .hud p {
+        margin: 0;
+        font-size: 0.82rem;
+        line-height: 1.45;
+        color: var(--muted);
+      }
+      .hud code {
+        font-size: 0.78em;
+        color: #fee08b;
+      }
+      #status {
+        margin-top: 10px;
+        font-size: 0.78rem;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      #status[data-tone="warn"] { color: #f0c674; }
+      #status[data-tone="err"] { color: #f07178; }
+      .full-load {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .full-load > span {
+        font-size: 0.72rem;
+        color: var(--muted);
+        width: 100%;
+      }
+      .full-load button {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.06);
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 5px 9px;
+        font: 650 0.72rem/1 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .full-load button:hover:not(:disabled) {
+        background: rgba(255,255,255,0.12);
+      }
+      .full-load button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .full-load button.active {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      #render-confirm {
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+      }
+      #render-warn {
+        font-size: 0.75rem;
+        line-height: 1.4;
+        color: #f0c674;
+        margin-bottom: 8px;
+      }
+      .confirm-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      #render-anyway {
+        appearance: none;
+        border: none;
+        background: #bf8700;
+        color: #fff;
+        border-radius: 6px;
+        padding: 6px 12px;
+        font: 700 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #render-cancel, #exit-full {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.06);
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 6px 12px;
+        font: 650 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+      }
+      .legend {
+        position: absolute;
+        z-index: 2;
+        right: 14px;
+        bottom: 28px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--panel);
+        border: 1px solid rgba(255,255,255,0.08);
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+      .legend strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .ramp {
+        width: 160px;
+        height: 10px;
+        border-radius: 999px;
+        background: linear-gradient(
+          90deg,
+          #5e4fa2,
+          #3288bd,
+          #66c2a5,
+          #abdda4,
+          #e6f598,
+          #fee08b,
+          #fdae61,
+          #f46d43,
+          #d53e4f,
+          #9e0142
+        );
+      }
+      .ramp-labels {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 4px;
+      }
+      .maplibre-control-zoomhome {
+        cursor: pointer;
+      }
+      .maplibre-control-zoomhome button {
+        width: 29px;
+        height: 29px;
+        display: block;
+        padding: 0;
+        border: 0;
+        cursor: pointer;
+        background: transparent;
+      }
+      .maplibre-control-zoomhome button img {
+        width: 18px;
+        height: 18px;
+        display: block;
+        margin: 5px auto;
+      }
+      .maplibregl-popup {
+        z-index: 5;
+      }
+      .maplibregl-popup-content {
+        color: #111;
+        background: #fff;
+        font: 12px/1.4 "IBM Plex Sans", system-ui, sans-serif;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      }
+      .maplibregl-popup-content strong {
+        color: #111;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div class="hud">
+      <h1>H3 population</h1>
+      <p>
+        <code>z0–8 → full h3_4</code> (cached)<br />
+        <code>z9 → h3_5</code>, <code>z10 → h3_6</code><br />
+        <code>z11 → h3_7</code>, <code>z12+ → h3_8</code>
+      </p>
+      <div id="status">Initializing map...</div>
+      <div class="full-load">
+        <span>Load full grid:</span>
+        <button type="button" data-full-res="5">h3_5</button>
+        <button type="button" data-full-res="6">h3_6</button>
+        <button type="button" id="exit-full" hidden>Exit full</button>
+      </div>
+      <div id="render-confirm" hidden>
+        <div id="render-warn"></div>
+        <div class="confirm-actions">
+          <button type="button" id="render-anyway">Render anyway</button>
+          <button type="button" id="render-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <strong>Population (log)</strong>
+      <div class="ramp" aria-hidden="true"></div>
+      <div class="ramp-labels"><span>low</span><span>high</span></div>
+    </div>
+    <script>
+      import { initPopMap } from "../scripts/popMap.ts";
+      const el = document.getElementById("map");
+      if (el) initPopMap(el);
+    </script>
+  </body>
+</html>
