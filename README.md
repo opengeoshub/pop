@@ -5,7 +5,7 @@ Thematic H3 map with zoom-dependent resolution. Viewport H3 IDs (via **h3-js** /
 ## Setup
 
 ```bash
-cd h3-pop-map
+cd pop
 npm install
 # optional one-time index (faster API); also auto-built on first request
 npm run index-pop
