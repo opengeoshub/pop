@@ -432,13 +432,6 @@ function wireFullLoadControls() {
     if (!pendingFull) return;
     const { resolution, rows, elapsedMs } = pendingFull;
     applyFullTable(resolution, rows, elapsedMs || undefined);
-    mapRef?.easeTo({
-      center: INITIAL_CENTER,
-      zoom: INITIAL_ZOOM,
-      bearing: 0,
-      pitch: 0,
-      duration: 800,
-    });
   });
 
   document.getElementById("render-cancel")?.addEventListener("click", () => {
