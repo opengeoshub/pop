@@ -1,4 +1,5 @@
 import * as maplibregl from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
 import { MapboxOverlay } from "@deck.gl/mapbox";
@@ -13,6 +14,18 @@ import {
 } from "../lib/dggs";
 import { lookupAllPopulation, lookupPopulation } from "../lib/clientDuckdb";
 import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
+import {
+  PALETTE_HEX,
+  VECTOR_LAYER_IDS,
+  loadGithubStyle,
+  rewriteVstylesUrl,
+  styleKey,
+  type PaletteId,
+} from "../lib/mapStyle";
+
+maplibregl.config.WORKER_URL = maplibreWorkerUrl;
+
+export type { PaletteId };
 
 export type PopEngine = "wasm" | "native" | "vector";
 
@@ -32,80 +45,8 @@ function ensurePmtilesProtocol() {
   pmtilesRegistered = true;
 }
 
-const VSTYLES_BASE =
-  "https://raw.githubusercontent.com/opengeoshub/vstyles/main/vstyles";
-const FIORD_STYLE_URL =
-  "https://raw.githubusercontent.com/opengeoshub/vstyles/refs/heads/main/vstyles/pop/fiord.json";
-const VSTYLES_POP = `${VSTYLES_BASE}/pop`;
-const VECTOR_LAYER_IDS = ["pop-h3-4", "pop-h3-5", "pop-h3-6", "pop-h3-7"] as const;
 const VECTOR_HELP_HTML =
   "<code>z0–8 → h3_4</code> (vector tiles)<br /><code>z9 → h3_5</code>, <code>z10 → h3_6</code>, <code>z11+ → h3_7</code>";
-
-/** Free ramps: ColorBrewer Spectral (Apache-2.0); matplotlib Magma/Viridis/Inferno (CC0). */
-export type PaletteId = "spectral" | "magma" | "viridis" | "terrain" | "heat";
-
-const PALETTE_HEX: Record<PaletteId, string[]> = {
-  spectral: [
-    "#5e4fa2",
-    "#3288bd",
-    "#66c2a5",
-    "#abdda4",
-    "#e6f598",
-    "#fee08b",
-    "#fdae61",
-    "#f46d43",
-    "#d53e4f",
-    "#9e0142",
-  ],
-  magma: [
-    "#000004",
-    "#180f3d",
-    "#440f76",
-    "#721f81",
-    "#9e2f7f",
-    "#cd4071",
-    "#f1605d",
-    "#fd9668",
-    "#feca8d",
-    "#fcfdbf",
-  ],
-  viridis: [
-    "#440154",
-    "#482878",
-    "#3e4989",
-    "#31688e",
-    "#26828e",
-    "#1f9e89",
-    "#35b779",
-    "#6ece58",
-    "#b5de2b",
-    "#fde725",
-  ],
-  terrain: [
-    "#333399",
-    "#0077be",
-    "#2ca25f",
-    "#99d594",
-    "#e6f598",
-    "#fee08b",
-    "#fdae61",
-    "#d08b48",
-    "#a6611a",
-    "#f7f7f7",
-  ],
-  heat: [
-    "#000004",
-    "#1b0c41",
-    "#4a0c6b",
-    "#781c6d",
-    "#a52c60",
-    "#cf4446",
-    "#ed6925",
-    "#fb9b06",
-    "#f7d13d",
-    "#fcffa4",
-  ],
-};
 
 function hexToRgb(hex: string): Color {
   const n = parseInt(hex.slice(1), 16);
@@ -138,23 +79,22 @@ function populationColor(pop: number, resolution: number): Color {
   return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f, 230];
 }
 
-function popStyleUrl(): string {
-  if (activeEngine !== "vector") return FIORD_STYLE_URL;
-  const file = `pop_${activePalette}.json`;
-  const override = import.meta.env.PUBLIC_VSTYLES_POP_URL?.trim();
-  if (override) return `${override.replace(/\/$/, "")}/${file}`;
-  if (import.meta.env.DEV) return `/vstyles/pop/${file}`;
-  return `${VSTYLES_POP}/${file}`;
-}
+let loadedStyleKey = "";
 
-let loadedStyleUrl = FIORD_STYLE_URL;
-
-function applyMapStyle(map: maplibregl.Map): boolean {
-  const url = popStyleUrl();
-  if (url === loadedStyleUrl) return false;
-  loadedStyleUrl = url;
-  map.setStyle(url);
-  return true;
+async function applyMapStyle(map: maplibregl.Map): Promise<boolean> {
+  const key = styleKey(activeEngine === "vector", activePalette);
+  if (key === loadedStyleKey) return false;
+  loadedStyleKey = key;
+  try {
+    const style = await loadGithubStyle(activeEngine === "vector", activePalette);
+    if (styleKey(activeEngine === "vector", activePalette) !== key) return false;
+    map.setStyle(style);
+    return true;
+  } catch (err) {
+    if (loadedStyleKey === key) loadedStyleKey = "";
+    setStatus(err instanceof Error ? err.message : "Failed to load style", "err");
+    return false;
+  }
 }
 
 function vectorResolutionForZoom(zoom: number): 4 | 5 | 6 | 7 {
@@ -174,7 +114,7 @@ function setPalette(id: PaletteId) {
   activePalette = id;
   syncLegendRamp();
   if (activeEngine === "vector") {
-    if (mapRef) applyMapStyle(mapRef);
+    if (mapRef) void applyMapStyle(mapRef);
     return;
   }
   if (paintedRows && paintedResolution != null) {
@@ -606,7 +546,7 @@ async function setActiveEngine(engine: PopEngine) {
     requestSeq += 1;
     clearHexLayer();
     syncDggsUi();
-    if (mapRef && !applyMapStyle(mapRef)) void refresh(mapRef);
+    if (mapRef && !(await applyMapStyle(mapRef))) void refresh(mapRef);
     return;
   }
 
@@ -615,7 +555,7 @@ async function setActiveEngine(engine: PopEngine) {
   requestSeq += 1;
   clearHexLayer();
   syncDggsUi();
-  if (mapRef && !applyMapStyle(mapRef)) void refresh(mapRef);
+  if (mapRef && !(await applyMapStyle(mapRef))) void refresh(mapRef);
 }
 
 async function setActiveDggs(dggs: DggsId) {
@@ -692,18 +632,28 @@ function wireFullLoadControls() {
 const INITIAL_CENTER: [number, number] = [105.85, 21.03];
 const INITIAL_ZOOM = 1;
 
-export function initPopMap(container: HTMLElement) {
+export async function initPopMap(container: HTMLElement) {
   ensurePmtilesProtocol();
   wireFullLoadControls();
 
-  loadedStyleUrl = popStyleUrl();
+  setStatus("Loading style…");
+  let initialStyle;
+  try {
+    initialStyle = await loadGithubStyle(activeEngine === "vector", activePalette);
+  } catch (err) {
+    setStatus(err instanceof Error ? err.message : "Failed to load style", "err");
+    return;
+  }
+
+  loadedStyleKey = styleKey(activeEngine === "vector", activePalette);
   const map = new maplibregl.Map({
     container,
-    style: loadedStyleUrl,
+    style: initialStyle,
     center: INITIAL_CENTER,
     zoom: INITIAL_ZOOM,
     minZoom: 0,
     maxZoom: 16,
+    transformRequest: (url) => ({ url: rewriteVstylesUrl(url) }),
   });
   mapRef = map;
 
@@ -720,7 +670,6 @@ export function initPopMap(container: HTMLElement) {
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
   map.on("style.load", () => {
-    map.setProjection({ type: "globe" });
     if (mapReady) void refresh(map);
   });
 
@@ -773,7 +722,6 @@ export function initPopMap(container: HTMLElement) {
       showTip(info.object, info.x, info.y);
     },
   });
-  map.addControl(overlay);
 
   map.on("mousemove", (e) => {
     if (activeEngine !== "vector") return;
@@ -801,6 +749,7 @@ export function initPopMap(container: HTMLElement) {
 
   map.on("load", () => {
     mapReady = true;
+    if (overlay) map.addControl(overlay);
     void refresh(map);
   });
 

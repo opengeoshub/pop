@@ -1,6 +1,6 @@
 export const vite = {
   optimizeDeps: {
-    exclude: ["duckdb", "@duckdb/duckdb-wasm", "maplibre-gl"],
+    exclude: ["duckdb", "@duckdb/duckdb-wasm"],
     include: [
       "@deck.gl/core",
       "@deck.gl/layers",
