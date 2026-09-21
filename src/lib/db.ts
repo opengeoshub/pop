@@ -6,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DGGS, type DggsId } from "./dggs";
-import { parquetUrl, sqlQuoteId } from "./parquet";
+import { serverParquetUrl, sqlQuoteId } from "./parquet";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = path.resolve(__dirname, "../../data");
@@ -55,7 +55,7 @@ async function downloadParquet(url: string, dest: string): Promise<string> {
   if (!resp.ok || !resp.body) {
     const hint =
       resp.status === 403
-        ? " Cloudflare is blocking the Render server (Bot Fight / WAF). On parquet.gishub.vn, skip Bot Fight or allow GET from Render."
+        ? " Cloudflare Bot Fight cannot be skipped per-hostname. Turn it off on gishub.vn, or set PARQUET_BASE on Render to the bucket's r2.dev URL."
         : "";
     throw new Error(
       `Could not fetch ${url} (${resp.status} ${resp.statusText}).${hint}`,
@@ -91,7 +91,7 @@ async function parquetSource(dggs: DggsId, res: number): Promise<string> {
 
   let pending = downloads.get(dest);
   if (!pending) {
-    pending = downloadParquet(parquetUrl(dggs, res), dest).finally(() => {
+    pending = downloadParquet(serverParquetUrl(dggs, res), dest).finally(() => {
       downloads.delete(dest);
     });
     downloads.set(dest, pending);

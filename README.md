@@ -63,6 +63,11 @@ npx wrangler pages deploy dist --project-name pop-e7c
 
 WASM talks to `parquet.gishub.vn` from the Pages origin (CORS). Native talks to Render (CORS is enabled on `/api/population`).
 
+If Native returns **403** from `parquet.gishub.vn`, Cloudflare [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/) is blocking Render. It cannot be skipped per hostname. Either:
+
+1. **gishub.vn** → Security → Bots → turn **Bot Fight Mode** off (and a Configuration Rule for `parquet.gishub.vn` with Browser Integrity Check / Hotlink Protection off), or
+2. R2 bucket → enable [Public Development URL](https://developers.cloudflare.com/r2/buckets/public-buckets/) (`https://pub-….r2.dev`), set Render env `PARQUET_BASE` to that origin (no trailing slash), redeploy Render. Browser WASM stays on `parquet.gishub.vn`.
+
 The Render Blueprint uses **Free** (512 MB, sleeps when idle). If Native OOMs, set `plan` to `starter` or `standard`.
 
 Optional local parquet build scripts:
