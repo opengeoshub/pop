@@ -14,6 +14,12 @@ import {
 import { lookupAllPopulation, lookupPopulation } from "../lib/clientDuckdb";
 import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
 
+export type DuckEngine = "wasm" | "native";
+
+function parseEngine(value: string | null): DuckEngine {
+  return value === "wasm" ? "wasm" : "native";
+}
+
 /** Same idea as A5 duckdb-playground: warn before tessellating huge results */
 const RENDER_WARNING_CELLS = 200_000;
 
@@ -143,6 +149,41 @@ function setStatus(text: string, tone: "ok" | "warn" | "err" = "ok") {
   el.dataset.tone = tone;
 }
 
+async function loadPopulationNative(opts: {
+  resolution: number;
+  all?: boolean;
+  bounds?: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+  };
+}): Promise<{ rows: HexRow[]; viewportIds: number }> {
+  let res: Response;
+  try {
+    res = await fetch("/api/population", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...opts, dggs: activeDggs }),
+    });
+  } catch {
+    throw new Error(
+      "Native DuckDB API is unreachable. Use DuckDB WASM, or run the Node server / Cloudflare Container.",
+    );
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  const population = (data.population ?? {}) as Record<string, number>;
+  const rows: HexRow[] = [];
+  for (const hex in population) {
+    rows.push({ hex, population: Number(population[hex]) });
+  }
+  return {
+    rows,
+    viewportIds: Number(data.viewportIds) || rows.length,
+  };
+}
+
 async function loadPopulation(opts: {
   resolution: number;
   all?: boolean;
@@ -153,6 +194,7 @@ async function loadPopulation(opts: {
     north: number;
   };
 }): Promise<{ rows: HexRow[]; viewportIds: number }> {
+  if (activeEngine === "native") return loadPopulationNative(opts);
   if (opts.all || activeDggs !== "h3" || !opts.bounds) {
     const rows = await lookupAllPopulation(activeDggs, opts.resolution);
     return { rows, viewportIds: rows.length };
@@ -173,13 +215,14 @@ let paintedResolution: number | null = null;
 let mapRef: maplibregl.Map | null = null;
 let fullLoadBusy = false;
 let activeDggs: DggsId = DEFAULT_DGGS;
+let activeEngine: DuckEngine = "native";
 
 function gridLabel(resolution: number, dggs: DggsId = activeDggs) {
   return `${DGGS[dggs].cellColumn}_${resolution}`;
 }
 
 function fullCacheKey(resolution: number) {
-  return `${activeDggs}:${resolution}`;
+  return `${activeEngine}:${activeDggs}:${resolution}`;
 }
 
 type PendingFull = {
@@ -388,6 +431,7 @@ async function refresh(map: maplibregl.Map) {
   const resolution = cfg.resolutionForZoom(zoom);
   const seq = ++requestSeq;
   const dggsAtStart = activeDggs;
+  const engineAtStart = activeEngine;
 
   try {
     if (zoom < cfg.fullTableZoom) {
@@ -400,7 +444,7 @@ async function refresh(map: maplibregl.Map) {
           resolution: cfg.adaptiveResolution,
           all: true,
         });
-        if (seq !== requestSeq || activeDggs !== dggsAtStart)
+        if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
           return;
         rows = loaded.rows;
         fullCache.set(fullCacheKey(cfg.adaptiveResolution), rows);
@@ -434,7 +478,7 @@ async function refresh(map: maplibregl.Map) {
       resolution,
       bounds,
     });
-    if (seq !== requestSeq || activeDggs !== dggsAtStart)
+    if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
       return;
 
     setHexLayer(rows, resolution);
@@ -444,7 +488,7 @@ async function refresh(map: maplibregl.Map) {
     );
     syncFullLoadUi();
   } catch (err) {
-    if (seq !== requestSeq || activeDggs !== dggsAtStart)
+    if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
       return;
     setStatus(
       err instanceof Error ? err.message : "Failed to load population",
@@ -461,6 +505,21 @@ function syncDggsUi() {
   const help = document.getElementById("dggs-help");
   if (help) help.innerHTML = cfg.helpHtml;
   syncFullLoadUi();
+}
+
+async function setActiveEngine(engine: DuckEngine) {
+  if (engine === activeEngine) return;
+  activeEngine = engine;
+  pendingFull = null;
+  lockedFullRes = null;
+  requestSeq += 1;
+  clearHexLayer();
+  const select = document.getElementById("engine") as HTMLSelectElement | null;
+  if (select) select.value = activeEngine;
+  document.querySelectorAll<HTMLButtonElement>("[data-engine]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.engine === activeEngine);
+  });
+  if (mapRef) void refresh(mapRef);
 }
 
 async function setActiveDggs(dggs: DggsId) {
@@ -491,6 +550,14 @@ function wireFullLoadControls() {
   document.getElementById("render-cancel")?.addEventListener("click", () => {
     cancelPendingFull();
   });
+
+  const engineSelect = document.getElementById("engine") as HTMLSelectElement | null;
+  if (engineSelect) {
+    engineSelect.value = activeEngine;
+    engineSelect.addEventListener("change", () => {
+      void setActiveEngine(parseEngine(engineSelect.value));
+    });
+  }
 
   const dggsSelect = document.getElementById("dggs") as HTMLSelectElement | null;
   if (dggsSelect) {

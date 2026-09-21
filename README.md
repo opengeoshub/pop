@@ -1,6 +1,9 @@
 # Population DGGS Map (Astro + MapLibre)
 
-Thematic population map with a HUD switch between **H3** (hexagons), **A5** (pentagons), and **S2**. The browser loads parquet through **duckdb-wasm** from `https://parquet.gishub.vn`. H3 uses zoom-dependent resolution; A5 loads the full `a5_7` table; S2 loads the full `s2_8` table.
+Thematic population map with a HUD switch between **H3**, **A5**, and **S2**, and a **DuckDB engine** switch:
+
+- **DuckDB WASM** — browser queries `https://parquet.gishub.vn` (current Pages-friendly path). CORS required.
+- **DuckDB Native** — `POST /api/population` uses Node DuckDB (`httpfs` parquet). On Cloudflare this runs in a **Container**.
 
 ## Setup
 
@@ -10,13 +13,9 @@ npm install
 npx astro dev
 ```
 
-Open http://localhost:4321
-
-The R2 bucket must send `Access-Control-Allow-Origin` (and allow `Range`) so the browser can read parquet.
+Open http://localhost:4321 and pick **Engine**. Native needs the Node server (this `astro dev`). WASM works in the browser.
 
 ## Data
-
-Parquet URLs (no year folder, no `.duckdb` at runtime):
 
 | Zoom | Grid | URL |
 |------|------|-----|
@@ -28,33 +27,23 @@ Parquet URLs (no year folder, no `.duckdb` at runtime):
 | all zooms | a5_7 | `https://parquet.gishub.vn/a5/a5_7.parquet` |
 | all zooms | s2_8 | `https://parquet.gishub.vn/s2/s2_8.parquet` |
 
-Optional local scripts (still use native DuckDB) if you are building those parquet files:
+Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally.
+
+## Deploy
+
+**WASM-only (Cloudflare Pages):** the existing `pop-e7c.pages.dev` site. Native will fail there (no API).
+
+**Native + WASM (Cloudflare Container)** — Docker must be running:
 
 ```bash
-npm run aggregate-pop              # h3_8 → h3_7, h3_6 → h3_5
+npx wrangler deploy
+```
+
+That builds `Dockerfile` (Node + native DuckDB) and a Worker that proxies to one warm container (`standard-2`, 6 GiB). First request may take a minute while the container starts.
+
+Optional local parquet build scripts:
+
+```bash
+npm run aggregate-pop
 npm run strip-parquet -- --dggs=a5,s2
 ```
-
-The HUD **DGGS** control switches between H3, A5, and S2.
-
-## Deploy (Cloudflare Pages)
-
-The app is a static build. Parquet stays on R2 (`parquet.gishub.vn`); do not put `data/` in git. DuckDB wasm is loaded from jsDelivr (Cloudflare Pages rejects files over 25 MB).
-
-```bash
-npm run deploy
-```
-
-That runs `astro build` and `wrangler pages deploy dist --project-name pop`.
-
-Or in the Cloudflare dashboard: Workers & Pages → Create → Pages → Connect `opengeoshub/pop`:
-
-| Setting | Value |
-|---------|--------|
-| Framework | Astro |
-| Build command | `npm run build` |
-| Output directory | `dist` |
-| Node version | `22.12.0` (from `.nvmrc`) |
-
-Then Custom domains → `pop.gishub.vn`. CORS on the parquet bucket already allows that origin.
-

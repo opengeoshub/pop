@@ -1,14 +1,8 @@
 import * as duckdb from "@duckdb/duckdb-wasm";
 import { DGGS, type DggsId } from "./dggs";
-
-const PARQUET_BASE = "https://parquet.gishub.vn";
+import { parquetUrl, sqlQuoteId } from "./parquet";
 
 export type PopRow = { hex: string; population: number };
-
-export function parquetUrl(dggs: DggsId, res: number): string {
-  const col = DGGS[dggs].cellColumn;
-  return `${PARQUET_BASE}/${dggs}/${col}_${res}.parquet`;
-}
 
 type DuckHandle = {
   db: duckdb.AsyncDuckDB;
@@ -42,7 +36,7 @@ async function getHandle(): Promise<DuckHandle> {
 }
 
 function sqlQuote(id: string): string {
-  return `'${id.replace(/'/g, "''")}'`;
+  return sqlQuoteId(id);
 }
 
 function asRows(

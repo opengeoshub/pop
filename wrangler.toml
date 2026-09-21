@@ -1,3 +1,17 @@
-name = "pop"
+name = "pop-container"
+main = "worker/index.ts"
 compatibility_date = "2026-09-21"
-pages_build_output_dir = "dist"
+
+[[containers]]
+class_name = "PopContainer"
+image = "./Dockerfile"
+max_instances = 2
+instance_type = "standard-2"
+
+[[durable_objects.bindings]]
+name = "POP_CONTAINER"
+class_name = "PopContainer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PopContainer"]

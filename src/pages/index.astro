@@ -30,7 +30,7 @@
         z-index: 2;
         top: 14px;
         left: 14px;
-        max-width: min(260px, calc(100vw - 28px));
+        max-width: min(300px, calc(100vw - 28px));
         padding: 14px 16px;
         border-radius: 10px;
         background: var(--panel);
@@ -161,8 +161,9 @@
         font-size: 0.72rem;
         color: var(--muted);
       }
-      #dggs, #palette {
+      #engine, #dggs, #palette {
         appearance: none;
+        color-scheme: dark;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.06);
         color: var(--ink);
@@ -176,8 +177,8 @@
         background-size: 5px 5px, 5px 5px;
         background-repeat: no-repeat;
       }
-      #dggs option, #palette option {
-        background: #0c121c;
+      #engine option, #dggs option, #palette option {
+        background: #000;
         color: var(--ink);
       }
       #show-panel {
@@ -300,6 +301,11 @@
       </p>
       <div id="status">Initializing map...</div>
       <div class="hud-tools">
+        <label for="engine">Engine</label>
+        <select id="engine" aria-label="DuckDB engine">
+          <option value="native" selected>DuckDB Native</option>
+          <option value="wasm">DuckDB WASM</option>
+        </select>
         <label for="dggs">DGGS</label>
         <select id="dggs" aria-label="DGGS">
           <option value="h3">H3</option>
