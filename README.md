@@ -3,7 +3,7 @@
 Thematic population map with a HUD switch between **H3**, **A5**, and **S2**, and a **DuckDB engine** switch:
 
 - **DuckDB WASM** — browser queries `https://parquet.gishub.vn` (current Pages-friendly path). CORS required.
-- **DuckDB Native** — `POST /api/population` uses Node DuckDB (`httpfs` parquet). On Cloudflare this runs in a **Container**.
+- **DuckDB Native** — `POST /api/population` uses Node DuckDB (`httpfs` parquet). On [Render](https://render.com/) this runs in the Docker web service.
 
 ## Setup
 
@@ -29,17 +29,20 @@ Open http://localhost:4321 and pick **Engine**. Native needs the Node server (th
 
 Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally.
 
-## Deploy
+## Deploy (Render)
 
-**WASM-only (Cloudflare Pages):** the existing `pop-e7c.pages.dev` site. Native will fail there (no API).
+Native DuckDB needs a Node server, so this app deploys as a **Docker web service** on [Render](https://render.com/docs/web-services). Push the repo to GitHub first.
 
-**Native + WASM (Cloudflare Container)** — Docker must be running:
+1. Open [Render](https://render.com/) and sign in.
+2. **New → Blueprint** and connect this repo (`render.yaml`), **or** **New → Web Service**, connect the repo, and set:
+   - Runtime: **Docker**
+   - Dockerfile path: `./Dockerfile`
+   - Health check: `/`
+3. Create the service. Render builds the image (Node 22 + native DuckDB) and serves `https://<name>.onrender.com`.
 
-```bash
-npx wrangler deploy
-```
+The process listens on `0.0.0.0:$PORT` (Render default `10000`). Native queries `https://parquet.gishub.vn`. WASM still runs in the browser.
 
-That builds `Dockerfile` (Node + native DuckDB) and a Worker that proxies to one warm container (`standard-2`, 6 GiB). First request may take a minute while the container starts.
+The Blueprint uses the **Free** instance (512 MB, spins down when idle). If Native OOMs or cold starts are too slow, change `plan` in `render.yaml` to `starter` or `standard` ([instance types](https://render.com/docs/web-services)).
 
 Optional local parquet build scripts:
 

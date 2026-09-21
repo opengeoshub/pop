@@ -9,8 +9,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "start": "node ./dist/server/entry.mjs",
     "astro": "astro",
-    "deploy": "npx wrangler deploy",
     "index-pop": "node scripts/index-pop.mjs",
     "aggregate-pop": "node scripts/aggregate-pop.mjs",
     "strip-parquet": "node scripts/strip-parquet-cols.mjs"
