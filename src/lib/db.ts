@@ -66,9 +66,16 @@ async function attachDuckdb(
       await run(conn, `ATTACH '${uri}' AS ${alias} (READ_ONLY)`);
       store.attached.add(alias);
     }
+    await all(conn, `SELECT 1 FROM ${alias}.pop LIMIT 0`);
     return alias;
   } catch (err) {
-    console.warn(`ATTACH ${file} failed, using parquet`, err);
+    console.warn(`ATTACH ${file} failed or has no pop table, using parquet`, err);
+    try {
+      await run(conn, `DETACH DATABASE IF EXISTS ${alias}`);
+    } catch {
+      /* ignore */
+    }
+    store.attached.delete(alias);
     return null;
   }
 }

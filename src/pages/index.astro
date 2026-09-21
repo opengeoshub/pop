@@ -178,6 +178,10 @@ export const prerender = true;
         background-size: 5px 5px, 5px 5px;
         background-repeat: no-repeat;
       }
+      #engine:disabled, #dggs:disabled, #palette:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
       #engine option, #dggs option, #palette option {
         background: #000;
         color: var(--ink);
@@ -303,9 +307,10 @@ export const prerender = true;
       <div id="status">Initializing map...</div>
       <div class="hud-tools">
         <label for="engine">Engine</label>
-        <select id="engine" aria-label="DuckDB engine">
+        <select id="engine" aria-label="Engine">
           <option value="wasm" selected>DuckDB WASM</option>
           <option value="native">DuckDB Native</option>
+          <option value="vector">Vector tile</option>
         </select>
         <label for="dggs">DGGS</label>
         <select id="dggs" aria-label="DGGS">

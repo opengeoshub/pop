@@ -14,10 +14,11 @@ import {
 import { lookupAllPopulation, lookupPopulation } from "../lib/clientDuckdb";
 import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
 
-export type DuckEngine = "wasm" | "native";
+export type PopEngine = "wasm" | "native" | "vector";
 
-function parseEngine(value: string | null): DuckEngine {
-  return value === "native" ? "native" : "wasm";
+function parseEngine(value: string | null): PopEngine {
+  if (value === "native" || value === "vector") return value;
+  return "wasm";
 }
 
 /** Same idea as A5 duckdb-playground: warn before tessellating huge results */
@@ -30,6 +31,15 @@ function ensurePmtilesProtocol() {
   maplibregl.addProtocol("pmtiles", protocol.tile);
   pmtilesRegistered = true;
 }
+
+const VSTYLES_BASE =
+  "https://raw.githubusercontent.com/opengeoshub/vstyles/main/vstyles";
+const FIORD_STYLE_URL =
+  "https://raw.githubusercontent.com/opengeoshub/vstyles/refs/heads/main/vstyles/pop/fiord.json";
+const VSTYLES_POP = `${VSTYLES_BASE}/pop`;
+const VECTOR_LAYER_IDS = ["pop-h3-4", "pop-h3-5", "pop-h3-6", "pop-h3-7"] as const;
+const VECTOR_HELP_HTML =
+  "<code>z0–8 → h3_4</code> (vector tiles)<br /><code>z9 → h3_5</code>, <code>z10 → h3_6</code>, <code>z11+ → h3_7</code>";
 
 /** Free ramps: ColorBrewer Spectral (Apache-2.0); matplotlib Magma/Viridis/Inferno (CC0). */
 export type PaletteId = "spectral" | "magma" | "viridis" | "terrain" | "heat";
@@ -128,6 +138,32 @@ function populationColor(pop: number, resolution: number): Color {
   return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f, 230];
 }
 
+function popStyleUrl(): string {
+  if (activeEngine !== "vector") return FIORD_STYLE_URL;
+  const file = `pop_${activePalette}.json`;
+  const override = import.meta.env.PUBLIC_VSTYLES_POP_URL?.trim();
+  if (override) return `${override.replace(/\/$/, "")}/${file}`;
+  if (import.meta.env.DEV) return `/vstyles/pop/${file}`;
+  return `${VSTYLES_POP}/${file}`;
+}
+
+let loadedStyleUrl = FIORD_STYLE_URL;
+
+function applyMapStyle(map: maplibregl.Map): boolean {
+  const url = popStyleUrl();
+  if (url === loadedStyleUrl) return false;
+  loadedStyleUrl = url;
+  map.setStyle(url);
+  return true;
+}
+
+function vectorResolutionForZoom(zoom: number): 4 | 5 | 6 | 7 {
+  if (zoom < 9) return 4;
+  if (zoom < 10) return 5;
+  if (zoom < 11) return 6;
+  return 7;
+}
+
 function syncLegendRamp() {
   const el = document.querySelector<HTMLElement>(".ramp");
   if (el) el.style.background = `linear-gradient(90deg, ${PALETTE_HEX[activePalette].join(", ")})`;
@@ -137,6 +173,10 @@ function setPalette(id: PaletteId) {
   if (!(id in PALETTE_HEX)) return;
   activePalette = id;
   syncLegendRamp();
+  if (activeEngine === "vector") {
+    if (mapRef) applyMapStyle(mapRef);
+    return;
+  }
   if (paintedRows && paintedResolution != null) {
     setHexLayer(paintedRows, paintedResolution);
   }
@@ -166,7 +206,7 @@ async function postNativeApi(
       body: JSON.stringify(body),
     });
     const type = res.headers.get("content-type") ?? "";
-    if (!res.ok || !type.includes("json")) return null;
+    if (!type.includes("json")) return null;
     return res;
   } catch {
     return null;
@@ -235,9 +275,10 @@ let lockedFullRes: number | null = null;
 let overlay: MapboxOverlay | null = null;
 let paintedResolution: number | null = null;
 let mapRef: maplibregl.Map | null = null;
+let mapReady = false;
 let fullLoadBusy = false;
 let activeDggs: DggsId = DEFAULT_DGGS;
-let activeEngine: DuckEngine = "wasm";
+let activeEngine: PopEngine = "wasm";
 
 function gridLabel(resolution: number, dggs: DggsId = activeDggs) {
   return `${DGGS[dggs].cellColumn}_${resolution}`;
@@ -368,6 +409,7 @@ function isPopResolution(n: number): boolean {
 }
 
 async function requestFullTable(resolution: number) {
+  if (activeEngine === "vector") return;
   if (fullLoadBusy) return;
   const cfg = DGGS[activeDggs];
 
@@ -435,6 +477,14 @@ async function requestFullTable(resolution: number) {
 let requestSeq = 0;
 
 async function refresh(map: maplibregl.Map) {
+  if (activeEngine === "vector") {
+    const zoom = map.getZoom();
+    const res = vectorResolutionForZoom(zoom);
+    setStatus(`z${zoom.toFixed(1)} · h3_${res} · PMTiles`);
+    syncDggsUi();
+    return;
+  }
+
   const cfg = DGGS[activeDggs];
 
   // Manual full-grid lock — don't clobber with viewport queries
@@ -506,7 +556,7 @@ async function refresh(map: maplibregl.Map) {
     setHexLayer(rows, resolution);
 
     setStatus(
-      `z${zoom.toFixed(1)} · ${cfg.label} r${resolution} · ${viewportIds.toLocaleString()} viewport IDs · ${rows.length.toLocaleString()} matched`,
+      `z${zoom.toFixed(1)} · ${gridLabel(resolution)} · ${viewportIds.toLocaleString()} viewport IDs · ${rows.length.toLocaleString()} matched`,
     );
     syncFullLoadUi();
   } catch (err) {
@@ -519,32 +569,57 @@ async function refresh(map: maplibregl.Map) {
   }
 }
 
-function syncDggsUi() {
-  const cfg = DGGS[activeDggs];
-  const select = document.getElementById("dggs") as HTMLSelectElement | null;
-  if (select) select.value = activeDggs;
+function syncVectorModeUi() {
+  const vector = activeEngine === "vector";
+  const dggsSelect = document.getElementById("dggs") as HTMLSelectElement | null;
+  if (dggsSelect) dggsSelect.disabled = vector;
+
+  const fullLoad = document.querySelector<HTMLElement>(".full-load");
+  if (fullLoad) fullLoad.hidden = vector;
 
   const help = document.getElementById("dggs-help");
-  if (help) help.innerHTML = cfg.helpHtml;
+  if (help) {
+    help.innerHTML = vector ? VECTOR_HELP_HTML : DGGS[activeDggs].helpHtml;
+  }
+}
+
+function syncDggsUi() {
+  const select = document.getElementById("dggs") as HTMLSelectElement | null;
+  if (select) select.value = activeDggs;
+  syncVectorModeUi();
   syncFullLoadUi();
 }
 
-async function setActiveEngine(engine: DuckEngine) {
+async function setActiveEngine(engine: PopEngine) {
   if (engine === activeEngine) return;
   activeEngine = engine;
-  pendingFull = null;
-  lockedFullRes = null;
-  requestSeq += 1;
-  clearHexLayer();
   const select = document.getElementById("engine") as HTMLSelectElement | null;
   if (select) select.value = activeEngine;
   document.querySelectorAll<HTMLButtonElement>("[data-engine]").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.engine === activeEngine);
   });
-  if (mapRef) void refresh(mapRef);
+
+  if (engine === "vector") {
+    activeDggs = "h3";
+    pendingFull = null;
+    lockedFullRes = null;
+    requestSeq += 1;
+    clearHexLayer();
+    syncDggsUi();
+    if (mapRef && !applyMapStyle(mapRef)) void refresh(mapRef);
+    return;
+  }
+
+  pendingFull = null;
+  lockedFullRes = null;
+  requestSeq += 1;
+  clearHexLayer();
+  syncDggsUi();
+  if (mapRef && !applyMapStyle(mapRef)) void refresh(mapRef);
 }
 
 async function setActiveDggs(dggs: DggsId) {
+  if (activeEngine === "vector") return;
   if (dggs === activeDggs) return;
   activeDggs = dggs;
   pendingFull = null;
@@ -621,10 +696,10 @@ export function initPopMap(container: HTMLElement) {
   ensurePmtilesProtocol();
   wireFullLoadControls();
 
+  loadedStyleUrl = popStyleUrl();
   const map = new maplibregl.Map({
     container,
-    style:
-      "https://raw.githubusercontent.com/opengeoshub/vstyles/main/vstyles/pop/pop.json",
+    style: loadedStyleUrl,
     center: INITIAL_CENTER,
     zoom: INITIAL_ZOOM,
     minZoom: 0,
@@ -646,6 +721,7 @@ export function initPopMap(container: HTMLElement) {
 
   map.on("style.load", () => {
     map.setProjection({ type: "globe" });
+    if (mapReady) void refresh(map);
   });
 
   const tip = document.createElement("div");
@@ -689,6 +765,7 @@ export function initPopMap(container: HTMLElement) {
     interleaved: false,
     layers: [],
     onHover: (info: PickingInfo<HexRow>) => {
+      if (activeEngine === "vector") return;
       if (!info.object || info.x == null || info.y == null) {
         hideTip();
         return;
@@ -698,7 +775,32 @@ export function initPopMap(container: HTMLElement) {
   });
   map.addControl(overlay);
 
+  map.on("mousemove", (e) => {
+    if (activeEngine !== "vector") return;
+    const layers = VECTOR_LAYER_IDS.filter((id) => map.getLayer(id));
+    if (!layers.length) {
+      hideTip();
+      return;
+    }
+    const feat = map.queryRenderedFeatures(e.point, { layers })[0];
+    if (!feat) {
+      hideTip();
+      return;
+    }
+    const props = feat.properties ?? {};
+    showTip(
+      { hex: String(props.h3 ?? ""), population: Number(props.population) },
+      e.point.x,
+      e.point.y,
+    );
+  });
+  map.on("mouseout", () => {
+    if (activeEngine !== "vector") return;
+    hideTip();
+  });
+
   map.on("load", () => {
+    mapReady = true;
     void refresh(map);
   });
 
