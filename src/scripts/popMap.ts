@@ -2,27 +2,20 @@ import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Protocol } from "pmtiles";
 import { MapboxOverlay } from "@deck.gl/mapbox";
-import { H3HexagonLayer } from "@deck.gl/geo-layers";
+import { A5Layer, H3HexagonLayer, S2Layer } from "@deck.gl/geo-layers";
 import type { Color, PickingInfo } from "@deck.gl/core";
+import { boundsFromMapCorners, h3IdsInBounds } from "../lib/h3Viewport";
 import {
-  resolutionForZoom,
-  boundsFromMapCorners,
-  FULL_TABLE_ZOOM,
-  type H3PopResolution,
-} from "../lib/h3Viewport";
+  DGGS,
+  DEFAULT_DGGS,
+  parseDggs,
+  type DggsId,
+} from "../lib/dggs";
+import { lookupAllPopulation, lookupPopulation } from "../lib/clientDuckdb";
 import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
 
 /** Same idea as A5 duckdb-playground: warn before tessellating huge results */
 const RENDER_WARNING_CELLS = 200_000;
-
-/** Approx log10 max population by H3 resolution (for Spectral stretch) */
-const LOG_MAX_BY_RES: Record<H3PopResolution, number> = {
-  4: Math.log10(5_000_000),
-  5: Math.log10(1_500_000),
-  6: Math.log10(500_000),
-  7: Math.log10(120_000),
-  8: Math.log10(40_000),
-};
 
 let pmtilesRegistered = false;
 function ensurePmtilesProtocol() {
@@ -116,17 +109,10 @@ type HexRow = { hex: string; population: number };
 let activePalette: PaletteId = "spectral";
 let paintedRows: HexRow[] | null = null;
 
-function populationToRows(population: Record<string, number>): HexRow[] {
-  const rows: HexRow[] = [];
-  for (const hex in population) {
-    rows.push({ hex, population: population[hex] });
-  }
-  return rows;
-}
-
-function populationColor(pop: number, resolution: H3PopResolution): Color {
+function populationColor(pop: number, resolution: number): Color {
   const ramp = PALETTE_RGB[activePalette];
-  const logMax = LOG_MAX_BY_RES[resolution];
+  const logMax =
+    DGGS[activeDggs].logMaxByRes[resolution] ?? Math.log10(5_000_000);
   const t = Math.min(1, Math.max(0, Math.log10(Math.max(pop, 1)) / logMax));
   const s = t * (ramp.length - 1);
   const i = Math.min(Math.floor(s), ramp.length - 2);
@@ -157,8 +143,8 @@ function setStatus(text: string, tone: "ok" | "warn" | "err" = "ok") {
   el.dataset.tone = tone;
 }
 
-async function fetchPopulation(opts: {
-  resolution: H3PopResolution;
+async function loadPopulation(opts: {
+  resolution: number;
   all?: boolean;
   bounds?: {
     west: number;
@@ -166,66 +152,82 @@ async function fetchPopulation(opts: {
     east: number;
     north: number;
   };
-}): Promise<{
-  population: Record<string, number>;
-  viewportIds: number;
-  mode: string;
-}> {
-  const res = await fetch("/api/population", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(opts),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return {
-    population: data.population as Record<string, number>,
-    viewportIds: Number(data.viewportIds) || 0,
-    mode: String(data.mode || "viewport"),
-  };
+}): Promise<{ rows: HexRow[]; viewportIds: number }> {
+  if (opts.all || activeDggs !== "h3" || !opts.bounds) {
+    const rows = await lookupAllPopulation(activeDggs, opts.resolution);
+    return { rows, viewportIds: rows.length };
+  }
+  const ids = h3IdsInBounds(
+    opts.bounds,
+    opts.resolution as 4 | 5 | 6 | 7 | 8,
+  );
+  return lookupPopulation(activeDggs, opts.resolution, ids);
 }
 
-/** Cached full tables (r4 auto; r5/r6 via HUD) */
-const fullCache = new Map<H3PopResolution, HexRow[]>();
-/** When set, pan/zoom keeps this full table instead of viewport queries */
-let lockedFullRes: H3PopResolution | null = null;
+/** Cached full tables keyed by `${dggs}:${resolution}` */
+const fullCache = new Map<string, HexRow[]>();
+/** When set (via HUD), pan/zoom keeps this full table instead of viewport queries */
+let lockedFullRes: number | null = null;
 let overlay: MapboxOverlay | null = null;
-let paintedResolution: H3PopResolution | null = null;
+let paintedResolution: number | null = null;
 let mapRef: maplibregl.Map | null = null;
 let fullLoadBusy = false;
+let activeDggs: DggsId = DEFAULT_DGGS;
+
+function gridLabel(resolution: number, dggs: DggsId = activeDggs) {
+  return `${DGGS[dggs].cellColumn}_${resolution}`;
+}
+
+function fullCacheKey(resolution: number) {
+  return `${activeDggs}:${resolution}`;
+}
 
 type PendingFull = {
-  resolution: H3PopResolution;
+  resolution: number;
   rows: HexRow[];
   elapsedMs: number;
 };
 let pendingFull: PendingFull | null = null;
 
-function setHexLayer(rows: HexRow[], resolution: H3PopResolution) {
+function setHexLayer(rows: HexRow[], resolution: number) {
   paintedRows = rows;
   paintedResolution = resolution;
-  overlay?.setProps({
-    layers: [
-      new H3HexagonLayer<HexRow>({
-        id: `h3-pop-r${resolution}`,
-        data: rows,
-        getHexagon: (d) => d.hex,
-        getFillColor: (d) => populationColor(d.population, resolution),
-        getLineColor: [20, 20, 20, 90],
-        lineWidthMinPixels: 0.35,
-        stroked: true,
-        filled: true,
-        extruded: false,
-        pickable: true,
-        highPrecision: true,
-        coverage: 1,
-        updateTriggers: {
-          getFillColor: `${activePalette}:${resolution}`,
-          data: `${resolution}:${rows.length}`,
-        },
-      }),
-    ],
-  });
+  const triggerKey = `${activeDggs}:${activePalette}:${resolution}`;
+  const common = {
+    data: rows,
+    getFillColor: (d: HexRow) => populationColor(d.population, resolution),
+    getLineColor: [20, 20, 20, 90] as Color,
+    lineWidthMinPixels: 0.35,
+    stroked: true,
+    filled: true,
+    extruded: false,
+    pickable: true,
+    updateTriggers: {
+      getFillColor: triggerKey,
+      data: `${triggerKey}:${rows.length}`,
+    },
+  };
+  const layer =
+    activeDggs === "a5"
+      ? new A5Layer<HexRow>({
+          id: `a5-pop-r${resolution}`,
+          getPentagon: (d) => d.hex,
+          ...common,
+        })
+      : activeDggs === "s2"
+        ? new S2Layer<HexRow>({
+            id: `s2-pop-r${resolution}`,
+            getS2Token: (d) => d.hex,
+            ...common,
+          })
+        : new H3HexagonLayer<HexRow>({
+            id: `h3-pop-r${resolution}`,
+            getHexagon: (d) => d.hex,
+            highPrecision: true,
+            coverage: 1,
+            ...common,
+          });
+  overlay?.setProps({ layers: [layer] });
 }
 
 function clearHexLayer() {
@@ -237,8 +239,8 @@ function clearHexLayer() {
 function syncFullLoadUi() {
   const confirm = document.getElementById("render-confirm");
   const warn = document.getElementById("render-warn");
-  const exitBtn = document.getElementById("exit-full") as HTMLButtonElement | null;
   const buttons = document.querySelectorAll<HTMLButtonElement>("[data-full-res]");
+  const cfg = DGGS[activeDggs];
 
   if (confirm && warn) {
     if (pendingFull) {
@@ -253,19 +255,21 @@ function syncFullLoadUi() {
     }
   }
 
-  if (exitBtn) {
-    exitBtn.hidden = lockedFullRes == null || lockedFullRes === 4;
-  }
-
   for (const btn of buttons) {
-    const res = Number(btn.dataset.fullRes) as H3PopResolution;
+    const dggs = parseDggs(btn.dataset.dggs) ?? "h3";
+    const res = Number(btn.dataset.fullRes);
+    btn.hidden = dggs !== activeDggs;
     btn.disabled = fullLoadBusy || pendingFull != null;
-    btn.classList.toggle("active", lockedFullRes === res);
+    const active =
+      res === cfg.adaptiveResolution
+        ? lockedFullRes == null
+        : lockedFullRes === res;
+    btn.classList.toggle("active", !btn.hidden && active);
   }
 }
 
 function applyFullTable(
-  resolution: H3PopResolution,
+  resolution: number,
   rows: HexRow[],
   elapsedMs?: number,
 ) {
@@ -275,7 +279,7 @@ function applyFullTable(
   const timing =
     elapsedMs != null ? ` · ${Math.round(elapsedMs)}ms` : " (cached)";
   setStatus(
-    `full h3_${resolution} · ${rows.length.toLocaleString()} cells${timing}`,
+    `${gridLabel(resolution)} · ${rows.length.toLocaleString()} cells${timing}`,
   );
   syncFullLoadUi();
 }
@@ -294,18 +298,40 @@ function exitLockedFull() {
   if (mapRef) void refresh(mapRef);
 }
 
-async function requestFullTable(resolution: 5 | 6) {
+function isPopResolution(n: number): boolean {
+  return DGGS[activeDggs].isResolution(n);
+}
+
+async function requestFullTable(resolution: number) {
   if (fullLoadBusy) return;
+  const cfg = DGGS[activeDggs];
+
+  // Adaptive button restores zoom-based loading (full coarse grid at low z)
+  if (resolution === cfg.adaptiveResolution) {
+    if (lockedFullRes == null && pendingFull == null) {
+      if (mapRef) void refresh(mapRef);
+      return;
+    }
+    exitLockedFull();
+    return;
+  }
+
+  // Clicking the active locked grid unlocks back to adaptive mode
+  if (lockedFullRes === resolution && pendingFull == null) {
+    exitLockedFull();
+    return;
+  }
+
   fullLoadBusy = true;
   pendingFull = null;
   syncFullLoadUi();
 
   try {
-    const cached = fullCache.get(resolution);
+    const cached = fullCache.get(fullCacheKey(resolution));
     if (cached) {
       if (cached.length > RENDER_WARNING_CELLS) {
         pendingFull = { resolution, rows: cached, elapsedMs: 0 };
-        setStatus(`h3_${resolution} ready — confirm to draw`);
+        setStatus(`${gridLabel(resolution)} ready - confirm to render`);
         syncFullLoadUi();
         return;
       }
@@ -313,19 +339,18 @@ async function requestFullTable(resolution: 5 | 6) {
       return;
     }
 
-    setStatus(`Loading full h3_${resolution}…`);
+    setStatus(`Loading full ${gridLabel(resolution)}…`);
     const t0 = performance.now();
-    const { population } = await fetchPopulation({
+    const { rows } = await loadPopulation({
       resolution,
       all: true,
     });
     const elapsedMs = performance.now() - t0;
-    const rows = populationToRows(population);
-    fullCache.set(resolution, rows);
+    fullCache.set(fullCacheKey(resolution), rows);
 
     if (rows.length > RENDER_WARNING_CELLS) {
       pendingFull = { resolution, rows, elapsedMs };
-      setStatus(`h3_${resolution} ready — confirm to draw`);
+      setStatus(`${gridLabel(resolution)} ready - confirm to render`);
       syncFullLoadUi();
       return;
     }
@@ -333,7 +358,7 @@ async function requestFullTable(resolution: 5 | 6) {
     applyFullTable(resolution, rows, elapsedMs);
   } catch (err) {
     setStatus(
-      err instanceof Error ? err.message : `Failed to load h3_${resolution}`,
+      err instanceof Error ? err.message : `Failed to load ${gridLabel(resolution)}`,
       "err",
     );
   } finally {
@@ -345,45 +370,50 @@ async function requestFullTable(resolution: 5 | 6) {
 let requestSeq = 0;
 
 async function refresh(map: maplibregl.Map) {
-  // Manual full h3_5/6 lock — don't clobber with viewport queries
-  if (lockedFullRes != null && lockedFullRes !== 4) {
-    const rows = fullCache.get(lockedFullRes);
+  const cfg = DGGS[activeDggs];
+
+  // Manual full-grid lock — don't clobber with viewport queries
+  if (lockedFullRes != null) {
+    const rows = fullCache.get(fullCacheKey(lockedFullRes));
     if (rows) {
       if (paintedResolution !== lockedFullRes) setHexLayer(rows, lockedFullRes);
       setStatus(
-        `full h3_${lockedFullRes} (locked) · ${rows.length.toLocaleString()} cells`,
+        `${gridLabel(lockedFullRes)} (locked) · ${rows.length.toLocaleString()} cells`,
       );
     }
     return;
   }
 
   const zoom = map.getZoom();
-  const resolution = resolutionForZoom(zoom);
+  const resolution = cfg.resolutionForZoom(zoom);
   const seq = ++requestSeq;
+  const dggsAtStart = activeDggs;
 
   try {
-    if (zoom < FULL_TABLE_ZOOM) {
-      lockedFullRes = 4;
-      let rows = fullCache.get(4) ?? null;
+    if (zoom < cfg.fullTableZoom) {
+      let rows = fullCache.get(fullCacheKey(cfg.adaptiveResolution)) ?? null;
       if (!rows) {
-        setStatus("Loading full h3_4…");
-        const { population } = await fetchPopulation({
-          resolution: 4,
+        setStatus(
+          `Loading full ${gridLabel(cfg.adaptiveResolution)}…`,
+        );
+        const loaded = await loadPopulation({
+          resolution: cfg.adaptiveResolution,
           all: true,
         });
-        if (seq !== requestSeq) return;
-        rows = populationToRows(population);
-        fullCache.set(4, rows);
+        if (seq !== requestSeq || activeDggs !== dggsAtStart)
+          return;
+        rows = loaded.rows;
+        fullCache.set(fullCacheKey(cfg.adaptiveResolution), rows);
       }
-      if (paintedResolution !== 4) setHexLayer(rows, 4);
+      if (paintedResolution !== cfg.adaptiveResolution) {
+        setHexLayer(rows, cfg.adaptiveResolution);
+      }
       setStatus(
-        `z${zoom.toFixed(1)} · full h3_4 · ${rows.length.toLocaleString()} cells`,
+        `z${zoom.toFixed(1)} · full ${gridLabel(cfg.adaptiveResolution)} · ${rows.length.toLocaleString()} cells`,
       );
       syncFullLoadUi();
       return;
     }
-
-    if (lockedFullRes === 4) lockedFullRes = null;
 
     if (paintedResolution !== null && paintedResolution !== resolution) {
       clearHexLayer();
@@ -396,23 +426,26 @@ async function refresh(map: maplibregl.Map) {
       .toArray() as [number, number];
     const bounds = boundsFromMapCorners(ul, lr);
 
-    setStatus(`Querying viewport ∩ h3_${resolution}…`);
+    setStatus(
+      `Querying viewport ∩ ${gridLabel(resolution)}…`,
+    );
 
-    const { population, viewportIds } = await fetchPopulation({
+    const { rows, viewportIds } = await loadPopulation({
       resolution,
       bounds,
     });
-    if (seq !== requestSeq) return;
+    if (seq !== requestSeq || activeDggs !== dggsAtStart)
+      return;
 
-    const rows = populationToRows(population);
     setHexLayer(rows, resolution);
 
     setStatus(
-      `z${zoom.toFixed(1)} · H3 r${resolution} · ${viewportIds.toLocaleString()} viewport IDs · ${rows.length.toLocaleString()} matched`,
+      `z${zoom.toFixed(1)} · ${cfg.label} r${resolution} · ${viewportIds.toLocaleString()} viewport IDs · ${rows.length.toLocaleString()} matched`,
     );
     syncFullLoadUi();
   } catch (err) {
-    if (seq !== requestSeq) return;
+    if (seq !== requestSeq || activeDggs !== dggsAtStart)
+      return;
     setStatus(
       err instanceof Error ? err.message : "Failed to load population",
       "err",
@@ -420,11 +453,32 @@ async function refresh(map: maplibregl.Map) {
   }
 }
 
+function syncDggsUi() {
+  const cfg = DGGS[activeDggs];
+  const select = document.getElementById("dggs") as HTMLSelectElement | null;
+  if (select) select.value = activeDggs;
+
+  const help = document.getElementById("dggs-help");
+  if (help) help.innerHTML = cfg.helpHtml;
+  syncFullLoadUi();
+}
+
+async function setActiveDggs(dggs: DggsId) {
+  if (dggs === activeDggs) return;
+  activeDggs = dggs;
+  pendingFull = null;
+  lockedFullRes = null;
+  requestSeq += 1;
+  clearHexLayer();
+  syncDggsUi();
+  if (mapRef) void refresh(mapRef);
+}
+
 function wireFullLoadControls() {
   document.querySelectorAll<HTMLButtonElement>("[data-full-res]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const res = Number(btn.dataset.fullRes);
-      if (res === 5 || res === 6) void requestFullTable(res);
+      if (isPopResolution(res)) void requestFullTable(res);
     });
   });
 
@@ -438,9 +492,14 @@ function wireFullLoadControls() {
     cancelPendingFull();
   });
 
-  document.getElementById("exit-full")?.addEventListener("click", () => {
-    exitLockedFull();
-  });
+  const dggsSelect = document.getElementById("dggs") as HTMLSelectElement | null;
+  if (dggsSelect) {
+    dggsSelect.value = activeDggs;
+    dggsSelect.addEventListener("change", () => {
+      const next = parseDggs(dggsSelect.value);
+      if (next) void setActiveDggs(next);
+    });
+  }
 
   const paletteSelect = document.getElementById("palette") as HTMLSelectElement | null;
   if (paletteSelect) {
@@ -463,7 +522,7 @@ function wireFullLoadControls() {
     showBtn.setAttribute("hidden", "");
   });
 
-  syncFullLoadUi();
+  syncDggsUi();
 }
 
 const INITIAL_CENTER: [number, number] = [105.85, 21.03];

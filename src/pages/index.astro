@@ -5,7 +5,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>H3 Population - spectral</title>
+    <title>World population (2023)</title>
     <style>
       :root {
         --ink: #e8eef5;
@@ -30,7 +30,7 @@
         z-index: 2;
         top: 14px;
         left: 14px;
-        max-width: min(240px, calc(100vw - 28px));
+        max-width: min(260px, calc(100vw - 28px));
         padding: 14px 16px;
         border-radius: 10px;
         background: var(--panel);
@@ -140,7 +140,7 @@
         font: 700 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
         cursor: pointer;
       }
-      #render-cancel, #exit-full, #hide-panel {
+      #render-cancel, #hide-panel {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.06);
@@ -161,7 +161,7 @@
         font-size: 0.72rem;
         color: var(--muted);
       }
-      #palette {
+      #dggs, #palette {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.06);
@@ -176,7 +176,7 @@
         background-size: 5px 5px, 5px 5px;
         background-repeat: no-repeat;
       }
-      #palette option {
+      #dggs option, #palette option {
         background: #0c121c;
         color: var(--ink);
       }
@@ -292,14 +292,20 @@
     <div id="map"></div>
     <button type="button" id="show-panel" hidden>Info</button>
     <div class="hud">
-      <h1>H3 population</h1>
-      <p>
+      <h1 id="dggs-title">World population (2023)</h1>
+      <p id="dggs-help">
         <code>z0–8 → full h3_4</code> (cached)<br />
         <code>z9 → h3_5</code>, <code>z10 → h3_6</code><br />
         <code>z11 → h3_7</code>, <code>z12+ → h3_8</code>
       </p>
       <div id="status">Initializing map...</div>
       <div class="hud-tools">
+        <label for="dggs">DGGS</label>
+        <select id="dggs" aria-label="DGGS">
+          <option value="h3">H3</option>
+          <option value="a5">A5</option>
+          <option value="s2">S2</option>
+        </select>
         <label for="palette">Palette</label>
         <select id="palette" aria-label="Color palette">
           <option value="spectral">Spectral</option>
@@ -311,9 +317,11 @@
       </div>
       <div class="full-load">
         <span>Load full grid:</span>
-        <button type="button" data-full-res="5">h3_5</button>
-        <button type="button" data-full-res="6">h3_6</button>
-        <button type="button" id="exit-full" hidden>Exit full</button>
+        <button type="button" data-dggs="h3" data-full-res="4">h3_4</button>
+        <button type="button" data-dggs="h3" data-full-res="5">h3_5</button>
+        <button type="button" data-dggs="h3" data-full-res="6">h3_6</button>
+        <button type="button" data-dggs="a5" data-full-res="7" hidden>a5_7</button>
+        <button type="button" data-dggs="s2" data-full-res="8" hidden>s2_8</button>
       </div>
       <div id="render-confirm" hidden>
         <div id="render-warn"></div>

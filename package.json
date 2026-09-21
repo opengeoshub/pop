@@ -10,21 +10,24 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
+    "deploy": "astro build && npx wrangler pages deploy dist --project-name pop",
     "index-pop": "node scripts/index-pop.mjs",
     "aggregate-pop": "node scripts/aggregate-pop.mjs",
     "strip-parquet": "node scripts/strip-parquet-cols.mjs"
   },
   "dependencies": {
-    "@astrojs/node": "^11.1.6",
     "@deck.gl/core": "^9.4.0",
     "@deck.gl/geo-layers": "^9.4.0",
     "@deck.gl/layers": "^9.4.0",
     "@deck.gl/mapbox": "^9.4.0",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
     "astro": "^7.3.3",
-    "duckdb": "^1.4.4",
     "h3-js": "^4.5.0",
     "maplibre-gl": "^6.10.0",
     "pmtiles": "^4.5.0"
+  },
+  "optionalDependencies": {
+    "duckdb": "^1.4.4"
   },
   "allowScripts": {
     "esbuild": true,
