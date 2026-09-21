@@ -25,6 +25,7 @@ if (!g.__popNativeDuck) {
   g.__popNativeDuck = { conn: null, tables: new Map(), attached: new Set() };
 }
 const store = g.__popNativeDuck;
+if (!store.attached) store.attached = new Set();
 
 function all<T = Record<string, unknown>>(
   conn: DuckConn,
@@ -59,12 +60,17 @@ async function attachDuckdb(
   const file = localDuckdbFile(dggs, `${DGGS[dggs].cellColumn}_${res}.duckdb`);
   if (!file) return null;
   const alias = duckAlias(dggs, res);
-  if (!store.attached.has(alias)) {
-    const uri = file.replace(/\\/g, "/").replace(/'/g, "''");
-    await run(conn, `ATTACH '${uri}' AS ${alias} (READ_ONLY)`);
-    store.attached.add(alias);
+  try {
+    if (!store.attached.has(alias)) {
+      const uri = file.replace(/\\/g, "/").replace(/'/g, "''");
+      await run(conn, `ATTACH '${uri}' AS ${alias} (READ_ONLY)`);
+      store.attached.add(alias);
+    }
+    return alias;
+  } catch (err) {
+    console.warn(`ATTACH ${file} failed, using parquet`, err);
+    return null;
   }
-  return alias;
 }
 
 async function downloadParquet(url: string, dest: string): Promise<string> {
@@ -143,6 +149,7 @@ async function getConn(): Promise<DuckConn> {
       return db.connect();
     })().catch((err) => {
       store.conn = null;
+      store.attached.clear();
       throw err;
     });
   }

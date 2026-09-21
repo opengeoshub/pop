@@ -149,10 +149,28 @@ function setStatus(text: string, tone: "ok" | "warn" | "err" = "ok") {
   el.dataset.tone = tone;
 }
 
-function nativePopulationEndpoint(): string {
+function remoteNativeEndpoint(): string | null {
   const base = import.meta.env.PUBLIC_NATIVE_API_URL?.trim();
-  if (base) return `${base.replace(/\/$/, "")}/api/population`;
-  return "/api/population";
+  if (!base) return null;
+  return `${base.replace(/\/$/, "")}/api/population`;
+}
+
+async function postNativeApi(
+  url: string,
+  body: unknown,
+): Promise<Response | null> {
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const type = res.headers.get("content-type") ?? "";
+    if (!res.ok || !type.includes("json")) return null;
+    return res;
+  } catch {
+    return null;
+  }
 }
 
 async function loadPopulationNative(opts: {
@@ -165,16 +183,14 @@ async function loadPopulationNative(opts: {
     north: number;
   };
 }): Promise<{ rows: HexRow[]; viewportIds: number }> {
-  let res: Response;
-  try {
-    res = await fetch(nativePopulationEndpoint(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...opts, dggs: activeDggs }),
-    });
-  } catch {
+  const body = { ...opts, dggs: activeDggs };
+  const remote = remoteNativeEndpoint();
+  const res =
+    (await postNativeApi("/api/population", body)) ??
+    (remote ? await postNativeApi(remote, body) : null);
+  if (!res) {
     throw new Error(
-      "Native DuckDB API is unreachable. Use DuckDB WASM, or set PUBLIC_NATIVE_API_URL to the Render service.",
+      "Native DuckDB API is unreachable. Use DuckDB WASM, run the Node server with data/*.duckdb, or set PUBLIC_NATIVE_API_URL to Render.",
     );
   }
   const data = await res.json();

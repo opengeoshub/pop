@@ -27,7 +27,7 @@ Open http://localhost:4321 and pick **Engine**. Native needs the Node server (th
 | all zooms | a5_7 | `https://parquet.gishub.vn/a5/a5_7.parquet` |
 | all zooms | s2_8 | `https://parquet.gishub.vn/s2/s2_8.parquet` |
 
-Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally (faster). If a file is missing, it falls back to `https://parquet.gishub.vn`. WASM does the same: it tries `/h3/h3_4.parquet` on this origin first, then R2.
+Native also uses `data/{h3|a5|s2}/*.duckdb` when those indexes exist (no Render request). If a `.duckdb` file is missing, it uses local parquet, then `https://parquet.gishub.vn`. WASM tries `/h3/h3_4.parquet` on this origin first, then R2.
 
 ## Deploy
 
