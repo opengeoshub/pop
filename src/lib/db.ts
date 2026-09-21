@@ -5,7 +5,7 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { DGGS, type DggsId } from "./dggs";
-import { localParquetFile } from "./dataDir";
+import { localDuckdbFile, localParquetFile } from "./dataDir";
 import { parquetFileName, serverParquetUrl, sqlQuoteId } from "./parquet";
 
 const CACHE_DIR = path.join(os.tmpdir(), "pop-parquet");
@@ -17,11 +17,12 @@ type DuckConn = ReturnType<DuckDb["connect"]>;
 type CacheStore = {
   conn: Promise<DuckConn> | null;
   tables: Map<string, Promise<{ cell: string; population: number }[]>>;
+  attached: Set<string>;
 };
 
 const g = globalThis as typeof globalThis & { __popNativeDuck?: CacheStore };
 if (!g.__popNativeDuck) {
-  g.__popNativeDuck = { conn: null, tables: new Map() };
+  g.__popNativeDuck = { conn: null, tables: new Map(), attached: new Set() };
 }
 const store = g.__popNativeDuck;
 
@@ -35,6 +36,35 @@ function all<T = Record<string, unknown>>(
       else resolve(rows ?? []);
     });
   });
+}
+
+function run(conn: DuckConn, sql: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    conn.run(sql, (err: Error | null) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+function duckAlias(dggs: DggsId, res: number): string {
+  return `${dggs}_${res}`;
+}
+
+async function attachDuckdb(
+  conn: DuckConn,
+  dggs: DggsId,
+  res: number,
+): Promise<string | null> {
+  const file = localDuckdbFile(dggs, `${DGGS[dggs].cellColumn}_${res}.duckdb`);
+  if (!file) return null;
+  const alias = duckAlias(dggs, res);
+  if (!store.attached.has(alias)) {
+    const uri = file.replace(/\\/g, "/").replace(/'/g, "''");
+    await run(conn, `ATTACH '${uri}' AS ${alias} (READ_ONLY)`);
+    store.attached.add(alias);
+  }
+  return alias;
 }
 
 async function downloadParquet(url: string, dest: string): Promise<string> {
@@ -129,8 +159,15 @@ async function queryPop(
   whereSql = "",
 ): Promise<{ cell: string; population: number }[]> {
   const col = DGGS[dggs].cellColumn;
-  const src = await parquetSource(dggs, resolution);
   const conn = await getConn();
+  const alias = await attachDuckdb(conn, dggs, resolution);
+  if (alias) {
+    return all<{ cell: string; population: number }>(
+      conn,
+      `SELECT ${col} AS cell, population FROM ${alias}.pop${whereSql}`,
+    );
+  }
+  const src = await parquetSource(dggs, resolution);
   return all<{ cell: string; population: number }>(
     conn,
     `SELECT ${col} AS cell, population FROM read_parquet('${src}')${whereSql}`,

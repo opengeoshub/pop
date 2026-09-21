@@ -21,3 +21,9 @@ export function localParquetFile(dggs: string, fileName: string): string | null 
   if (fs.existsSync(file) && fs.statSync(file).size > 0) return file;
   return null;
 }
+
+export function localDuckdbFile(dggs: string, fileName: string): string | null {
+  const file = path.join(resolveDataRoot(), dggs, fileName);
+  if (fs.existsSync(file) && fs.statSync(file).size > 0) return file;
+  return null;
+}
