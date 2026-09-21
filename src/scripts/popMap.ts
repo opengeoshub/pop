@@ -17,7 +17,7 @@ import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
 export type DuckEngine = "wasm" | "native";
 
 function parseEngine(value: string | null): DuckEngine {
-  return value === "wasm" ? "wasm" : "native";
+  return value === "native" ? "native" : "wasm";
 }
 
 /** Same idea as A5 duckdb-playground: warn before tessellating huge results */
@@ -221,7 +221,7 @@ let paintedResolution: number | null = null;
 let mapRef: maplibregl.Map | null = null;
 let fullLoadBusy = false;
 let activeDggs: DggsId = DEFAULT_DGGS;
-let activeEngine: DuckEngine = "native";
+let activeEngine: DuckEngine = "wasm";
 
 function gridLabel(resolution: number, dggs: DggsId = activeDggs) {
   return `${DGGS[dggs].cellColumn}_${resolution}`;
