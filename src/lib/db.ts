@@ -4,12 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
 import { DGGS, type DggsId } from "./dggs";
-import { serverParquetUrl, sqlQuoteId } from "./parquet";
+import { localParquetFile } from "./dataDir";
+import { parquetFileName, serverParquetUrl, sqlQuoteId } from "./parquet";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_ROOT = path.resolve(__dirname, "../../data");
 const CACHE_DIR = path.join(os.tmpdir(), "pop-parquet");
 const downloads = new Map<string, Promise<string>>();
 
@@ -78,13 +76,13 @@ async function downloadParquet(url: string, dest: string): Promise<string> {
   return dest.replace(/\\/g, "/");
 }
 
-/** Prefer repo `data/`, else download once to /tmp (avoids DuckDB httpfs 403 on Render). */
+/** Prefer `data/`, else download from R2 (`parquet.gishub.vn`) into /tmp. */
 async function parquetSource(dggs: DggsId, res: number): Promise<string> {
-  const col = DGGS[dggs].cellColumn;
-  const local = path.join(DATA_ROOT, dggs, `${col}_${res}.parquet`);
-  if (fs.existsSync(local)) return local.replace(/\\/g, "/");
+  const name = parquetFileName(dggs, res);
+  const local = localParquetFile(dggs, name);
+  if (local) return local.replace(/\\/g, "/");
 
-  const dest = path.join(CACHE_DIR, `${col}_${res}.parquet`);
+  const dest = path.join(CACHE_DIR, name);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
     return dest.replace(/\\/g, "/");
   }

@@ -1,6 +1,6 @@
 import * as duckdb from "@duckdb/duckdb-wasm";
 import { DGGS, type DggsId } from "./dggs";
-import { parquetUrl, sqlQuoteId } from "./parquet";
+import { localParquetUrl, parquetUrl, sqlQuoteId } from "./parquet";
 
 export type PopRow = { hex: string; population: number };
 
@@ -56,26 +56,46 @@ function asRows(
   });
 }
 
-/** Fetch on the page origin (CORS works). Worker XHR from read_parquet(https://…) does not. */
+const PAR1 = [0x50, 0x41, 0x52, 0x31];
+
+function isParquetBuffer(buf: Uint8Array): boolean {
+  if (buf.byteLength < 8) return false;
+  for (let i = 0; i < 4; i++) {
+    if (buf[i] !== PAR1[i]) return false;
+    if (buf[buf.byteLength - 4 + i] !== PAR1[i]) return false;
+  }
+  return true;
+}
+
+async function tryLoadParquet(url: string): Promise<Uint8Array | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const type = resp.headers.get("content-type") ?? "";
+    if (type.includes("text/html")) return null;
+    const buf = new Uint8Array(await resp.arrayBuffer());
+    return isParquetBuffer(buf) ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Prefer same-origin `/h3/…` when it is real parquet; else R2. */
 async function ensureParquet(dggs: DggsId, res: number): Promise<string> {
   const name = `${dggs}_${res}.parquet`;
   if (registered.has(name)) return name;
 
-  const url = parquetUrl(dggs, res);
-  let resp: Response;
-  try {
-    resp = await fetch(url);
-  } catch {
+  const buf =
+    (await tryLoadParquet(localParquetUrl(dggs, res))) ??
+    (await tryLoadParquet(parquetUrl(dggs, res)));
+  if (!buf) {
     throw new Error(
-      `Could not fetch ${url}. AllowedOrigins must include this page origin (http://localhost:4321 in dev).`,
+      `Could not fetch ${parquetUrl(dggs, res)}. AllowedOrigins must include this page origin.`,
     );
-  }
-  if (!resp.ok) {
-    throw new Error(`Parquet not found: ${url} (${resp.status})`);
   }
 
   const { db } = await getHandle();
-  await db.registerFileBuffer(name, new Uint8Array(await resp.arrayBuffer()));
+  await db.registerFileBuffer(name, buf);
   registered.add(name);
   return name;
 }

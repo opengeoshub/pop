@@ -3,7 +3,7 @@
 Thematic population map with a HUD switch between **H3**, **A5**, and **S2**, and a **DuckDB engine** switch:
 
 - **DuckDB WASM** — browser queries `https://parquet.gishub.vn`. Works on Cloudflare Pages.
-- **DuckDB Native** — browser POSTs to Render `/api/population` (Node DuckDB + `httpfs`).
+- **DuckDB Native** — browser POSTs to Render `/api/population` (Node DuckDB).
 
 ## Setup
 
@@ -27,7 +27,7 @@ Open http://localhost:4321 and pick **Engine**. Native needs the Node server (th
 | all zooms | a5_7 | `https://parquet.gishub.vn/a5/a5_7.parquet` |
 | all zooms | s2_8 | `https://parquet.gishub.vn/s2/s2_8.parquet` |
 
-Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally.
+Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally (faster). If a file is missing, it falls back to `https://parquet.gishub.vn`. WASM does the same: it tries `/h3/h3_4.parquet` on this origin first, then R2.
 
 ## Deploy
 
@@ -56,17 +56,17 @@ In the Pages project (`pop-e7c` or a new one):
 Or from this machine:
 
 ```powershell
-$env:PUBLIC_NATIVE_API_URL="https://<your-service>.onrender.com"
+$env:PUBLIC_NATIVE_API_URL="https://pop-e8ix.onrender.com"
 npm run build:pages
-npx wrangler pages deploy dist --project-name pop-e7c
+npx wrangler pages deploy dist --project-name pop --commit-dirty=true
 ```
 
-WASM talks to `parquet.gishub.vn` from the Pages origin (CORS). Native talks to Render (CORS is enabled on `/api/population`).
+WASM talks to `parquet.gishub.vn` from the Pages origin (CORS). Native talks to Render.
 
 If Native returns **403** from `parquet.gishub.vn`, Cloudflare [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/bot-fight-mode/) is blocking Render. It cannot be skipped per hostname. Either:
 
 1. **gishub.vn** → Security → Bots → turn **Bot Fight Mode** off (and a Configuration Rule for `parquet.gishub.vn` with Browser Integrity Check / Hotlink Protection off), or
-2. R2 bucket → enable [Public Development URL](https://developers.cloudflare.com/r2/buckets/public-buckets/) (`https://pub-….r2.dev`), set Render env `PARQUET_BASE` to that origin (no trailing slash), redeploy Render. Browser WASM stays on `parquet.gishub.vn`.
+2. R2 bucket → enable [Public Development URL](https://developers.cloudflare.com/r2/buckets/public-buckets/) (`https://pub-….r2.dev`), set Render env `PARQUET_BASE` to that origin (no trailing slash), redeploy Render.
 
 The Render Blueprint uses **Free** (512 MB, sleeps when idle). If Native OOMs, set `plan` to `starter` or `standard`.
 
