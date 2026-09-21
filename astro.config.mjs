@@ -1,27 +1,26 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import node from "@astrojs/node";
+import { vite } from "./astro.vite.mjs";
+
+/** Native DuckDB API for local `astro dev` and the Render Docker service. */
+function nativePopulationApi() {
+  return {
+    name: "native-population-api",
+    hooks: {
+      "astro:config:setup": ({ injectRoute }) => {
+        injectRoute({
+          pattern: "/api/population",
+          entrypoint: "./src/lib/populationRoute.ts",
+        });
+      },
+    },
+  };
+}
 
 export default defineConfig({
   output: "server",
   adapter: node({ mode: "standalone" }),
-  vite: {
-    optimizeDeps: {
-      exclude: ["duckdb", "@duckdb/duckdb-wasm", "maplibre-gl"],
-      include: [
-        "@deck.gl/core",
-        "@deck.gl/layers",
-        "@deck.gl/geo-layers",
-        "@deck.gl/mapbox",
-        "a5-js",
-        "h3-js",
-      ],
-    },
-    ssr: {
-      external: ["duckdb"],
-    },
-    worker: {
-      format: "es",
-    },
-  },
+  integrations: [nativePopulationApi()],
+  vite,
 });

@@ -2,8 +2,8 @@
 
 Thematic population map with a HUD switch between **H3**, **A5**, and **S2**, and a **DuckDB engine** switch:
 
-- **DuckDB WASM** — browser queries `https://parquet.gishub.vn` (current Pages-friendly path). CORS required.
-- **DuckDB Native** — `POST /api/population` uses Node DuckDB (`httpfs` parquet). On [Render](https://render.com/) this runs in the Docker web service.
+- **DuckDB WASM** — browser queries `https://parquet.gishub.vn`. Works on Cloudflare Pages.
+- **DuckDB Native** — browser POSTs to Render `/api/population` (Node DuckDB + `httpfs`).
 
 ## Setup
 
@@ -29,20 +29,41 @@ Open http://localhost:4321 and pick **Engine**. Native needs the Node server (th
 
 Native also uses `data/{h3|a5|s2}/*.parquet` if those files exist locally.
 
-## Deploy (Render)
+## Deploy
 
-Native DuckDB needs a Node server, so this app deploys as a **Docker web service** on [Render](https://render.com/docs/web-services). Push the repo to GitHub first.
+Split: **UI on Cloudflare Pages**, **Native DuckDB API on Render**.
 
-1. Open [Render](https://render.com/) and sign in.
-2. **New → Blueprint** and connect this repo (`render.yaml`), **or** **New → Web Service**, connect the repo, and set:
-   - Runtime: **Docker**
-   - Dockerfile path: `./Dockerfile`
-   - Health check: `/`
-3. Create the service. Render builds the image (Node 22 + native DuckDB) and serves `https://<name>.onrender.com`.
+### 1. Render (Native API only)
 
-The process listens on `0.0.0.0:$PORT` (Render default `10000`). Native queries `https://parquet.gishub.vn`. WASM still runs in the browser.
+Push the repo to GitHub, then on [Render](https://render.com/docs/web-services):
 
-The Blueprint uses the **Free** instance (512 MB, spins down when idle). If Native OOMs or cold starts are too slow, change `plan` in `render.yaml` to `starter` or `standard` ([instance types](https://render.com/docs/web-services)).
+1. **New → Blueprint** (uses `render.yaml`), or **New → Web Service** with Docker / `./Dockerfile`
+2. Health check: `/api/population`
+3. Note the URL, e.g. `https://pop.onrender.com`
+
+### 2. Cloudflare Pages (UI)
+
+In the Pages project (`pop-e7c` or a new one):
+
+| Setting | Value |
+|--------|--------|
+| Build command | `npm install --omit=optional && npm run build:pages` |
+| Output directory | `dist` |
+| Environment variable | `PUBLIC_NATIVE_API_URL` = `https://<your-service>.onrender.com` |
+
+`PUBLIC_NATIVE_API_URL` is inlined at **build** time. Redeploy Pages after the Render URL is known.
+
+Or from this machine:
+
+```powershell
+$env:PUBLIC_NATIVE_API_URL="https://<your-service>.onrender.com"
+npm run build:pages
+npx wrangler pages deploy dist --project-name pop-e7c
+```
+
+WASM talks to `parquet.gishub.vn` from the Pages origin (CORS). Native talks to Render (CORS is enabled on `/api/population`).
+
+The Render Blueprint uses **Free** (512 MB, sleeps when idle). If Native OOMs, set `plan` to `starter` or `standard`.
 
 Optional local parquet build scripts:
 

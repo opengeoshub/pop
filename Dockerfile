@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install
 
-COPY astro.config.mjs tsconfig.json ./
+COPY astro.config.mjs astro.vite.mjs tsconfig.json ./
 COPY src ./src
 COPY public ./public
 

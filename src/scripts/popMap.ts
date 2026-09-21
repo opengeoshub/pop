@@ -149,6 +149,12 @@ function setStatus(text: string, tone: "ok" | "warn" | "err" = "ok") {
   el.dataset.tone = tone;
 }
 
+function nativePopulationEndpoint(): string {
+  const base = import.meta.env.PUBLIC_NATIVE_API_URL?.trim();
+  if (base) return `${base.replace(/\/$/, "")}/api/population`;
+  return "/api/population";
+}
+
 async function loadPopulationNative(opts: {
   resolution: number;
   all?: boolean;
@@ -161,14 +167,14 @@ async function loadPopulationNative(opts: {
 }): Promise<{ rows: HexRow[]; viewportIds: number }> {
   let res: Response;
   try {
-    res = await fetch("/api/population", {
+    res = await fetch(nativePopulationEndpoint(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...opts, dggs: activeDggs }),
     });
   } catch {
     throw new Error(
-      "Native DuckDB API is unreachable. Use DuckDB WASM, or run the Node server / Cloudflare Container.",
+      "Native DuckDB API is unreachable. Use DuckDB WASM, or set PUBLIC_NATIVE_API_URL to the Render service.",
     );
   }
   const data = await res.json();

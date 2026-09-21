@@ -5,14 +5,27 @@ import {
   parseResolution,
   DGGS,
   type DggsId,
-} from "../../lib/dggs";
-import { lookupAllPopulation, lookupPopulation } from "../../lib/db";
+} from "./dggs";
+import { lookupAllPopulation, lookupPopulation } from "./db";
 import {
   h3IdsInBounds,
   type LngLatBoundsLike,
-} from "../../lib/h3Viewport";
+} from "./h3Viewport";
 
 export const prerender = false;
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...cors },
+  });
+}
 
 function parseBounds(raw: unknown): LngLatBoundsLike | null {
   if (!raw || typeof raw !== "object") return null;
@@ -25,6 +38,11 @@ function parseBounds(raw: unknown): LngLatBoundsLike | null {
   return { west, south, east, north };
 }
 
+export const OPTIONS: APIRoute = async () =>
+  new Response(null, { status: 204, headers: cors });
+
+export const GET: APIRoute = async () => json({ ok: true, engine: "native" });
+
 export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await request.json();
@@ -36,18 +54,15 @@ export const POST: APIRoute = async ({ request }) => {
     if (body?.all === true) {
       const population = await lookupAllPopulation(resolution, dggs);
       const matched = Object.keys(population).length;
-      return new Response(
-        JSON.stringify({
-          population,
-          matched,
-          viewportIds: matched,
-          resolution,
-          dggs,
-          engine: "native",
-          mode: "all",
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      );
+      return json({
+        population,
+        matched,
+        viewportIds: matched,
+        resolution,
+        dggs,
+        engine: "native",
+        mode: "all",
+      });
     }
 
     let ids: string[] = [];
@@ -59,58 +74,47 @@ export const POST: APIRoute = async ({ request }) => {
       } else {
         const population = await lookupAllPopulation(resolution, dggs);
         const matched = Object.keys(population).length;
-        return new Response(
-          JSON.stringify({
-            population,
-            matched,
-            viewportIds: matched,
-            resolution,
-            dggs,
-            engine: "native",
-            mode: "all",
-          }),
-          { headers: { "Content-Type": "application/json" } },
-        );
+        return json({
+          population,
+          matched,
+          viewportIds: matched,
+          resolution,
+          dggs,
+          engine: "native",
+          mode: "all",
+        });
       }
     } else if (Array.isArray(body?.ids)) {
       ids = body.ids.filter((id: unknown) => typeof id === "string");
     }
 
     if (ids.length === 0) {
-      return new Response(
-        JSON.stringify({
-          population: {},
-          matched: 0,
-          viewportIds: 0,
-          resolution,
-          dggs,
-          engine: "native",
-          mode: "viewport",
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    const population = await lookupPopulation(ids, resolution, dggs);
-    return new Response(
-      JSON.stringify({
-        population,
-        matched: Object.keys(population).length,
-        viewportIds: ids.length,
+      return json({
+        population: {},
+        matched: 0,
+        viewportIds: 0,
         resolution,
         dggs,
         engine: "native",
         mode: "viewport",
-      }),
-      { headers: { "Content-Type": "application/json" } },
-    );
+      });
+    }
+
+    const population = await lookupPopulation(ids, resolution, dggs);
+    return json({
+      population,
+      matched: Object.keys(population).length,
+      viewportIds: ids.length,
+      resolution,
+      dggs,
+      engine: "native",
+      mode: "viewport",
+    });
   } catch (err) {
     console.error(err);
-    return new Response(
-      JSON.stringify({
-        error: err instanceof Error ? err.message : "Lookup failed",
-      }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+    return json(
+      { error: err instanceof Error ? err.message : "Lookup failed" },
+      500,
     );
   }
 };
