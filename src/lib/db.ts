@@ -1,12 +1,17 @@
 import duckdb from "duckdb";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { DGGS, type DggsId } from "./dggs";
 import { parquetUrl, sqlQuoteId } from "./parquet";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = path.resolve(__dirname, "../../data");
+const CACHE_DIR = path.join(os.tmpdir(), "pop-parquet");
+const downloads = new Map<string, Promise<string>>();
 
 type DuckDb = InstanceType<typeof duckdb.Database>;
 type DuckConn = ReturnType<DuckDb["connect"]>;
@@ -34,20 +39,64 @@ function all<T = Record<string, unknown>>(
   });
 }
 
-function run(conn: DuckConn, sql: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    conn.run(sql, (err: Error | null) => {
-      if (err) reject(err);
-      else resolve();
-    });
+async function downloadParquet(url: string, dest: string): Promise<string> {
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const part = `${dest}.${process.pid}.part`;
+  const resp = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+      Referer: "https://pop.gishub.vn/",
+      Origin: "https://pop.gishub.vn",
+      Accept: "application/octet-stream,*/*",
+    },
+    redirect: "follow",
   });
+  if (!resp.ok || !resp.body) {
+    const hint =
+      resp.status === 403
+        ? " Cloudflare is blocking the Render server (Bot Fight / WAF). On parquet.gishub.vn, skip Bot Fight or allow GET from Render."
+        : "";
+    throw new Error(
+      `Could not fetch ${url} (${resp.status} ${resp.statusText}).${hint}`,
+    );
+  }
+  try {
+    await pipeline(
+      Readable.fromWeb(resp.body as import("node:stream/web").ReadableStream),
+      fs.createWriteStream(part),
+    );
+    fs.renameSync(part, dest);
+  } catch (err) {
+    try {
+      fs.unlinkSync(part);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+  return dest.replace(/\\/g, "/");
 }
 
-function parquetSource(dggs: DggsId, res: number): string {
+/** Prefer repo `data/`, else download once to /tmp (avoids DuckDB httpfs 403 on Render). */
+async function parquetSource(dggs: DggsId, res: number): Promise<string> {
   const col = DGGS[dggs].cellColumn;
   const local = path.join(DATA_ROOT, dggs, `${col}_${res}.parquet`);
   if (fs.existsSync(local)) return local.replace(/\\/g, "/");
-  return parquetUrl(dggs, res);
+
+  const dest = path.join(CACHE_DIR, `${col}_${res}.parquet`);
+  if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
+    return dest.replace(/\\/g, "/");
+  }
+
+  let pending = downloads.get(dest);
+  if (!pending) {
+    pending = downloadParquet(parquetUrl(dggs, res), dest).finally(() => {
+      downloads.delete(dest);
+    });
+    downloads.set(dest, pending);
+  }
+  return pending;
 }
 
 function openDatabase(): Promise<DuckDb> {
@@ -63,10 +112,7 @@ async function getConn(): Promise<DuckConn> {
   if (!store.conn) {
     store.conn = (async () => {
       const db = await openDatabase();
-      const conn = db.connect();
-      await run(conn, "INSTALL httpfs");
-      await run(conn, "LOAD httpfs");
-      return conn;
+      return db.connect();
     })().catch((err) => {
       store.conn = null;
       throw err;
@@ -85,7 +131,7 @@ async function queryPop(
   whereSql = "",
 ): Promise<{ cell: string; population: number }[]> {
   const col = DGGS[dggs].cellColumn;
-  const src = parquetSource(dggs, resolution);
+  const src = await parquetSource(dggs, resolution);
   const conn = await getConn();
   return all<{ cell: string; population: number }>(
     conn,
