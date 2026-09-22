@@ -1,12 +1,10 @@
 /**
- * Viewport → H3 FeatureCollection, adapted from vgrid-maplibre H3Grid.
- * @see https://github.com/opengeoshub/vgrid-maplibre/blob/main/H3/H3Grid.js
+ * Viewport → H3 IDs for DuckDB lookups.
  */
 import {
-  cellToBoundary,
-  getResolution,
-  isPentagon,
   polygonToCells,
+  polygonToCellsExperimental,
+  POLYGON_TO_CELLS_FLAGS,
 } from "h3-js";
 
 /** H3 resolutions supported by parquet datasets */
@@ -38,31 +36,57 @@ export type LngLatBoundsLike = {
   north: number;
 };
 
-export function boundsFromMapCorners(
-  upperLeft: [number, number],
-  lowerRight: [number, number],
-  bufferRatio = 0.05,
-): LngLatBoundsLike {
-  const west = Math.min(upperLeft[0], lowerRight[0]);
-  const east = Math.max(upperLeft[0], lowerRight[0]);
-  const south = Math.min(upperLeft[1], lowerRight[1]);
-  const north = Math.max(upperLeft[1], lowerRight[1]);
-  const dw = (east - west) * bufferRatio;
-  const dh = (north - south) * bufferRatio;
+export function boundsFromLngLatBounds(b: {
+  getWest(): number;
+  getSouth(): number;
+  getEast(): number;
+  getNorth(): number;
+}): LngLatBoundsLike {
   return {
-    west: Math.max(west - dw, -180),
-    east: Math.min(east + dw, 180),
-    south: Math.max(south - dh, -90),
-    north: Math.min(north + dh, 90),
+    west: b.getWest(),
+    south: b.getSouth(),
+    east: b.getEast(),
+    north: b.getNorth(),
   };
 }
 
-/** Collect H3 cell IDs covering the map canvas at the given resolution. */
+function cellsOverlappingLoop(
+  loop: [number, number][],
+  resolution: number,
+): string[] {
+  try {
+    return (
+      polygonToCellsExperimental(
+        loop,
+        resolution,
+        POLYGON_TO_CELLS_FLAGS.containmentOverlapping,
+      ) ?? []
+    );
+  } catch {
+    try {
+      return polygonToCells(loop, resolution) ?? [];
+    } catch {
+      return [];
+    }
+  }
+}
+
+/** Collect H3 cell IDs whose geometry intersects the map bounds. */
 export function h3IdsInBounds(
   bounds: LngLatBoundsLike,
-  resolution: H3PopResolution,
+  resolution: number,
 ): string[] {
   const { west, south, east, north } = bounds;
+  if (
+    !Number.isFinite(west) ||
+    !Number.isFinite(east) ||
+    !Number.isFinite(south) ||
+    !Number.isFinite(north) ||
+    !(east > west) ||
+    !(north > south)
+  ) {
+    return [];
+  }
   const ring: [number, number][] = [
     [north, west],
     [north, east],
@@ -81,59 +105,17 @@ export function h3IdsInBounds(
       [south, upperX],
       [south, lowerX],
     ];
-    for (const id of polygonToCells(part, resolution)) {
+    for (const id of cellsOverlappingLoop(part, resolution)) {
       ids.add(id);
     }
     lowerX += xIncrement;
   }
 
   if (ids.size === 0) {
-    for (const id of polygonToCells(ring, resolution)) {
+    for (const id of cellsOverlappingLoop(ring, resolution)) {
       ids.add(id);
     }
   }
 
   return [...ids];
-}
-
-export type H3FeatureProperties = {
-  h3_id: string;
-  resolution: number;
-  population: number | null;
-  pentagon?: boolean;
-};
-
-export function cellsToFeatureCollection(
-  ids: string[],
-  populationById: Record<string, number> = {},
-) {
-  const features = [];
-
-  for (const h3_id of ids) {
-    let boundary = cellToBoundary(h3_id, true) as [number, number][];
-    if (boundary.some((e) => e[0] < -130)) {
-      boundary = boundary.map((e) =>
-        e[0] > 0 ? ([e[0] - 360, e[1]] as [number, number]) : e,
-      );
-    }
-
-    const props: H3FeatureProperties = {
-      h3_id,
-      resolution: getResolution(h3_id),
-      population:
-        populationById[h3_id] != null ? Number(populationById[h3_id]) : null,
-    };
-    if (isPentagon(h3_id)) props.pentagon = true;
-
-    features.push({
-      type: "Feature" as const,
-      properties: props,
-      geometry: {
-        type: "Polygon" as const,
-        coordinates: [boundary],
-      },
-    });
-  }
-
-  return { type: "FeatureCollection" as const, features };
 }

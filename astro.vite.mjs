@@ -1,4 +1,13 @@
 export const vite = {
+  server: {
+    proxy: {
+      "/pmtiles": {
+        target: "https://tiles.gishub.vn",
+        changeOrigin: true,
+        secure: true,
+      },
+    },
+  },
   optimizeDeps: {
     exclude: ["duckdb", "@duckdb/duckdb-wasm"],
     include: [
@@ -8,6 +17,8 @@ export const vite = {
       "@deck.gl/mapbox",
       "a5-js",
       "h3-js",
+      "@mapbox/vector-tile",
+      "pbf",
     ],
   },
   ssr: {

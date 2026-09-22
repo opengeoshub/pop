@@ -6,7 +6,7 @@ import {
   DGGS,
   type DggsId,
 } from "./dggs";
-import { lookupAllPopulation, lookupPopulation } from "./db";
+import { lookupAllPopulation, lookupPopulation, runUserSql } from "./db";
 import {
   h3IdsInBounds,
   type LngLatBoundsLike,
@@ -46,6 +46,15 @@ export const GET: APIRoute = async () => json({ ok: true, engine: "native" });
 export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await request.json();
+    if (typeof body?.sql === "string") {
+      const rows = await runUserSql(body.sql);
+      return json({
+        rows,
+        matched: rows.length,
+        engine: "native",
+        mode: "sql",
+      });
+    }
     const dggs: DggsId = parseDggs(body?.dggs) ?? DEFAULT_DGGS;
     const cfg = DGGS[dggs];
     const resolution =

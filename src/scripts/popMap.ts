@@ -5,14 +5,19 @@ import { Protocol } from "pmtiles";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import { A5Layer, H3HexagonLayer, S2Layer } from "@deck.gl/geo-layers";
 import type { Color, PickingInfo } from "@deck.gl/core";
-import { boundsFromMapCorners, h3IdsInBounds } from "../lib/h3Viewport";
+import { getResolution } from "h3-js";
+import {
+  boundsFromLngLatBounds,
+  h3IdsInBounds,
+} from "../lib/h3Viewport";
 import {
   DGGS,
+  DGGS_IDS,
   DEFAULT_DGGS,
   parseDggs,
   type DggsId,
 } from "../lib/dggs";
-import { lookupAllPopulation, lookupPopulation } from "../lib/clientDuckdb";
+import { lookupAllPopulation, lookupPopulation, runUserSql } from "../lib/clientDuckdb";
 import { MapLibreControlZoomHome } from "../lib/MapLibreControlZoomHome";
 import {
   PALETTE_HEX,
@@ -22,31 +27,65 @@ import {
   styleKey,
   type PaletteId,
 } from "../lib/mapStyle";
+import {
+  NONE_GEOM_OUTLINE_LAYER,
+  NONE_GEOM_FILL_LAYER,
+  NONE_GEOM_SOURCE,
+  setNoneGeomProtocol,
+  updateNoneGeomPopulation,
+} from "../lib/noneGeomTiles";
+import {
+  defaultAggregateSql,
+  defaultDggsSql,
+  highlightSqlHtml,
+  inferDggsFromSql,
+  isAdaptiveH3Sql,
+  type SqlPopRow,
+} from "../lib/sqlPlayground";
 
 maplibregl.config.WORKER_URL = maplibreWorkerUrl;
 
 export type { PaletteId };
 
-export type PopEngine = "wasm" | "native" | "vector";
+export type PopEngine = "wasm" | "native" | "vector" | "none-geom";
 
 function parseEngine(value: string | null): PopEngine {
-  if (value === "native" || value === "vector") return value;
+  if (value === "native" || value === "vector" || value === "none-geom") {
+    return value;
+  }
   return "wasm";
+}
+
+function isVectorEngine() {
+  return activeEngine === "vector";
+}
+
+function isNoneGeomEngine() {
+  return activeEngine === "none-geom";
+}
+
+function locksH3Tiles() {
+  return isVectorEngine() || isNoneGeomEngine();
+}
+
+function usesDeckOverlay() {
+  return !isVectorEngine();
+}
+
+function isDuckEngine() {
+  return activeEngine === "wasm" || activeEngine === "native";
 }
 
 /** Same idea as A5 duckdb-playground: warn before tessellating huge results */
 const RENDER_WARNING_CELLS = 200_000;
 
-let pmtilesRegistered = false;
+let pmtilesProtocol: Protocol | null = null;
 function ensurePmtilesProtocol() {
-  if (pmtilesRegistered) return;
-  const protocol = new Protocol();
-  maplibregl.addProtocol("pmtiles", protocol.tile);
-  pmtilesRegistered = true;
+  if (pmtilesProtocol) return pmtilesProtocol;
+  pmtilesProtocol = new Protocol();
+  maplibregl.addProtocol("pmtiles", pmtilesProtocol.tile);
+  return pmtilesProtocol;
 }
-
-const VECTOR_HELP_HTML =
-  "<code>z0–8 → h3_4</code> (vector tiles)<br /><code>z9 → h3_5</code>, <code>z10 → h3_6</code>, <code>z11+ → h3_7</code>";
 
 function hexToRgb(hex: string): Color {
   const n = parseInt(hex.slice(1), 16);
@@ -70,24 +109,36 @@ function populationColor(pop: number, resolution: number): Color {
   const ramp = PALETTE_RGB[activePalette];
   const logMax =
     DGGS[activeDggs].logMaxByRes[resolution] ?? Math.log10(5_000_000);
-  const t = Math.min(1, Math.max(0, Math.log10(Math.max(pop, 1)) / logMax));
+  const value = Number(pop);
+  const t = Number.isFinite(value)
+    ? Math.min(1, Math.max(0, Math.log10(Math.max(value, 1)) / logMax))
+    : 0;
   const s = t * (ramp.length - 1);
   const i = Math.min(Math.floor(s), ramp.length - 2);
   const f = s - i;
   const [r0, g0, b0] = ramp[i];
   const [r1, g1, b1] = ramp[i + 1];
-  return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f, 230];
+  return [
+    Math.round(r0 + (r1 - r0) * f),
+    Math.round(g0 + (g1 - g0) * f),
+    Math.round(b0 + (b1 - b0) * f),
+    255,
+  ];
 }
 
 let loadedStyleKey = "";
 
+function currentStyleKey() {
+  return styleKey(activeEngine === "vector", activePalette);
+}
+
 async function applyMapStyle(map: maplibregl.Map): Promise<boolean> {
-  const key = styleKey(activeEngine === "vector", activePalette);
+  const key = currentStyleKey();
   if (key === loadedStyleKey) return false;
   loadedStyleKey = key;
   try {
     const style = await loadGithubStyle(activeEngine === "vector", activePalette);
-    if (styleKey(activeEngine === "vector", activePalette) !== key) return false;
+    if (currentStyleKey() !== key) return false;
     map.setStyle(style);
     return true;
   } catch (err) {
@@ -104,6 +155,10 @@ function vectorResolutionForZoom(zoom: number): 4 | 5 | 6 | 7 {
   return 7;
 }
 
+function viewStatus(zoom: number, resolution: number): string {
+  return `z${zoom.toFixed(1)} · ${gridLabel(resolution)}`;
+}
+
 function syncLegendRamp() {
   const el = document.querySelector<HTMLElement>(".ramp");
   if (el) el.style.background = `linear-gradient(90deg, ${PALETTE_HEX[activePalette].join(", ")})`;
@@ -113,7 +168,7 @@ function setPalette(id: PaletteId) {
   if (!(id in PALETTE_HEX)) return;
   activePalette = id;
   syncLegendRamp();
-  if (activeEngine === "vector") {
+  if (isVectorEngine()) {
     if (mapRef) void applyMapStyle(mapRef);
     return;
   }
@@ -208,37 +263,66 @@ async function loadPopulation(opts: {
   return lookupPopulation(activeDggs, opts.resolution, ids);
 }
 
-/** Cached full tables keyed by `${dggs}:${resolution}` */
+/** Cached full tables keyed by `${engine}:${dggs}:${resolution}` */
 const fullCache = new Map<string, HexRow[]>();
-/** When set (via HUD), pan/zoom keeps this full table instead of viewport queries */
-let lockedFullRes: number | null = null;
+let holdFullTotalStatus = false;
 let overlay: MapboxOverlay | null = null;
 let paintedResolution: number | null = null;
+let sqlLayerEpoch = 0;
 let mapRef: maplibregl.Map | null = null;
 let mapReady = false;
-let fullLoadBusy = false;
 let activeDggs: DggsId = DEFAULT_DGGS;
 let activeEngine: PopEngine = "wasm";
+/** User SQL result — pan/zoom must not replace the query layer */
+let sqlLock = false;
+let sqlBusy = false;
+let sqlPaintDggs: DggsId | null = null;
+type PendingSql = { rows: HexRow[]; resolution: number; elapsedMs: number };
+let pendingSql: PendingSql | null = null;
+/** Which Samples chip is highlighted, e.g. "h3:4" or "h3:agg" */
+let activeSampleKey: string | null = "h3:4";
 
 function gridLabel(resolution: number, dggs: DggsId = activeDggs) {
   return `${DGGS[dggs].cellColumn}_${resolution}`;
+}
+
+function paintDggs(): DggsId {
+  return sqlLock && sqlPaintDggs ? sqlPaintDggs : activeDggs;
 }
 
 function fullCacheKey(resolution: number) {
   return `${activeEngine}:${activeDggs}:${resolution}`;
 }
 
-type PendingFull = {
-  resolution: number;
-  rows: HexRow[];
-  elapsedMs: number;
-};
-let pendingFull: PendingFull | null = null;
+function a5PentagonId(hex: string): string | bigint {
+  const s = hex.replace(/^0x/i, "");
+  if (s && /^[0-9a-f]+$/i.test(s)) {
+    try {
+      return BigInt(`0x${s}`);
+    } catch {
+      return hex;
+    }
+  }
+  return hex;
+}
 
 function setHexLayer(rows: HexRow[], resolution: number) {
   paintedRows = rows;
   paintedResolution = resolution;
-  const triggerKey = `${activeDggs}:${activePalette}:${resolution}`;
+  if (!overlay || !usesDeckOverlay()) return;
+  if (mapRef) ensureDeckOverlay(mapRef);
+  if (mapRef && !mapRef.hasControl(overlay)) return;
+  if (!rows.length) {
+    try {
+      overlay.setProps({ layers: [] });
+    } catch {
+      /* empty hex layer can throw in luma while tearing down */
+    }
+    return;
+  }
+  const layerDggs = paintDggs();
+  sqlLayerEpoch += 1;
+  const triggerKey = `${activeEngine}:${layerDggs}:${activePalette}:${resolution}:${rows.length}:${sqlLayerEpoch}`;
   const common = {
     data: rows,
     getFillColor: (d: HexRow) => populationColor(d.population, resolution),
@@ -247,54 +331,97 @@ function setHexLayer(rows: HexRow[], resolution: number) {
     stroked: true,
     filled: true,
     extruded: false,
+    wireframe: false,
+    material: false,
     pickable: true,
+    parameters: {
+      depthTest: true,
+      depthCompare: "less-equal" as const,
+      depthWriteEnabled: true,
+      cullMode: "back" as const,
+    },
     updateTriggers: {
       getFillColor: triggerKey,
-      data: `${triggerKey}:${rows.length}`,
+      data: triggerKey,
     },
   };
   const layer =
-    activeDggs === "a5"
+    layerDggs === "a5"
       ? new A5Layer<HexRow>({
-          id: `a5-pop-r${resolution}`,
-          getPentagon: (d) => d.hex,
+          id: `${activeEngine}-a5-pop-r${resolution}-${activePalette}-${sqlLayerEpoch}`,
+          getPentagon: (d) => a5PentagonId(d.hex),
           ...common,
         })
-      : activeDggs === "s2"
+      : layerDggs === "s2"
         ? new S2Layer<HexRow>({
-            id: `s2-pop-r${resolution}`,
+            id: `${activeEngine}-s2-pop-r${resolution}-${activePalette}-${sqlLayerEpoch}`,
             getS2Token: (d) => d.hex,
             ...common,
           })
         : new H3HexagonLayer<HexRow>({
-            id: `h3-pop-r${resolution}`,
+            id: `${activeEngine}-h3-pop-r${resolution}-${activePalette}-${sqlLayerEpoch}`,
             getHexagon: (d) => d.hex,
             highPrecision: true,
             coverage: 1,
             ...common,
           });
-  overlay?.setProps({ layers: [layer] });
+  try {
+    overlay.setProps({ layers: [layer] });
+  } catch {
+    /* overlay WebGL attributes may already be gone */
+  }
+}
+
+function ensureDeckOverlay(map: maplibregl.Map) {
+  if (!overlay || !usesDeckOverlay()) return;
+  if (!map.hasControl(overlay)) map.addControl(overlay);
 }
 
 function clearHexLayer() {
   paintedRows = null;
   paintedResolution = null;
-  overlay?.setProps({ layers: [] });
+  try {
+    if (overlay && mapRef?.hasControl(overlay)) overlay.setProps({ layers: [] });
+  } catch {
+    /* overlay is detached */
+  }
+}
+
+function hideDeckOverlay(map: maplibregl.Map) {
+  try {
+    if (overlay && map.hasControl(overlay)) {
+      map.removeControl(overlay);
+    }
+  } catch {
+    /* overlay already gone */
+  }
+  paintedRows = null;
+  paintedResolution = null;
+}
+
+function removeNoneGeomLayers(map: maplibregl.Map) {
+  if (map.getLayer(NONE_GEOM_OUTLINE_LAYER)) map.removeLayer(NONE_GEOM_OUTLINE_LAYER);
+  if (map.getLayer(NONE_GEOM_FILL_LAYER)) map.removeLayer(NONE_GEOM_FILL_LAYER);
+  if (map.getSource(NONE_GEOM_SOURCE)) map.removeSource(NONE_GEOM_SOURCE);
 }
 
 function syncFullLoadUi() {
   const confirm = document.getElementById("render-confirm");
   const warn = document.getElementById("render-warn");
   const buttons = document.querySelectorAll<HTMLButtonElement>("[data-full-res]");
-  const cfg = DGGS[activeDggs];
 
   if (confirm && warn) {
-    if (pendingFull) {
+    const pending = pendingSql;
+    if (pending) {
       confirm.hidden = false;
+      const n = pending.rows.length.toLocaleString();
+      const loadNote =
+        pending.elapsedMs > 0
+          ? ` in ${Math.round(pending.elapsedMs)}ms`
+          : " (cached)";
       warn.textContent =
-        `Loaded ${pendingFull.rows.length.toLocaleString()} cells` +
-        ` in ${Math.round(pendingFull.elapsedMs)}ms. ` +
-        `Rendering the full grid may freeze the browser for a while.`;
+        `Loaded ${n} cells${loadNote}. ` +
+        `Rendering this many may temporarily freeze the browser.`;
     } else {
       confirm.hidden = true;
       warn.textContent = "";
@@ -303,141 +430,321 @@ function syncFullLoadUi() {
 
   for (const btn of buttons) {
     const dggs = parseDggs(btn.dataset.dggs) ?? "h3";
-    const res = Number(btn.dataset.fullRes);
     btn.hidden = dggs !== activeDggs;
-    btn.disabled = fullLoadBusy || pendingFull != null;
-    const active =
-      res === cfg.adaptiveResolution
-        ? lockedFullRes == null
-        : lockedFullRes === res;
-    btn.classList.toggle("active", !btn.hidden && active);
+    btn.disabled = sqlBusy;
+    const res = Number(btn.dataset.fullRes);
+    btn.classList.toggle(
+      "active",
+      !btn.hidden && activeSampleKey === `${dggs}:${res}`,
+    );
   }
+
+  document.querySelectorAll<HTMLButtonElement>("[data-sql-agg]").forEach((btn) => {
+    const dggs = parseDggs(btn.dataset.dggs) ?? "h3";
+    btn.hidden = dggs !== activeDggs;
+    btn.disabled = sqlBusy || !isDuckEngine();
+    btn.classList.toggle(
+      "active",
+      !btn.hidden && activeSampleKey === `${dggs}:agg`,
+    );
+  });
 }
 
-function applyFullTable(
+function announceFullTotal(
   resolution: number,
   rows: HexRow[],
   elapsedMs?: number,
 ) {
-  lockedFullRes = resolution;
-  pendingFull = null;
-  setHexLayer(rows, resolution);
+  holdFullTotalStatus = true;
   const timing =
-    elapsedMs != null ? ` · ${Math.round(elapsedMs)}ms` : " (cached)";
+    elapsedMs == null ? "" : elapsedMs > 0 ? ` · ${Math.round(elapsedMs)}ms` : " (cached)";
   setStatus(
     `${gridLabel(resolution)} · ${rows.length.toLocaleString()} cells${timing}`,
+  );
+}
+
+function cancelPendingFull() {
+  const restoreSql = pendingSql != null && sqlLock;
+  pendingSql = null;
+  setStatus("Rendering cancelled — add an aggregation (e.g. h3_cell_to_parent) to reduce the cell count");
+  if (restoreSql) {
+    clearSqlLock();
+    if (mapRef) void refresh(mapRef);
+  }
+  syncFullLoadUi();
+}
+
+function clearSqlLock() {
+  sqlLock = false;
+  sqlPaintDggs = null;
+  pendingSql = null;
+}
+
+function sqlRunShortcut(): string {
+  return /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘⏎" : "Ctrl+Enter";
+}
+
+function resolutionFromSqlRows(rows: HexRow[], dggs: DggsId): number {
+  if (dggs === "h3" && rows[0]) {
+    try {
+      return getResolution(rows[0].hex);
+    } catch {
+      /* hex conversion may still leave a non-H3 id */
+    }
+  }
+  return DGGS[dggs].adaptiveResolution;
+}
+
+function sqlFingerprint(sql: string): string {
+  return sql
+    .replace(/;+\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function sampleKeyFromSql(sql: string): string | null {
+  if (isAdaptiveH3Sql(sql)) return "h3:4";
+  const fp = sqlFingerprint(sql);
+  if (fp === sqlFingerprint(defaultAggregateSql("h3"))) return "h3:agg";
+  if (fp === sqlFingerprint(defaultAggregateSql("a5"))) return "a5:agg";
+  if (fp === sqlFingerprint(defaultAggregateSql("s2"))) return "s2:agg";
+  for (const dggs of DGGS_IDS) {
+    for (const res of DGGS[dggs].fullLoadResolutions) {
+      if (fp === sqlFingerprint(sampleTableSql(dggs, res))) {
+        return `${dggs}:${res}`;
+      }
+    }
+  }
+  return null;
+}
+
+function applyAdaptiveH3Result(rows: HexRow[], elapsedMs: number) {
+  clearSqlLock();
+  pendingSql = null;
+  if (activeDggs !== "h3") {
+    activeDggs = "h3";
+    syncDggsUi();
+  }
+  activeSampleKey = "h3:4";
+  fullCache.set(fullCacheKey(DGGS.h3.adaptiveResolution), rows);
+  announceFullTotal(DGGS.h3.adaptiveResolution, rows, elapsedMs);
+  syncFullLoadUi();
+  if (mapRef) void refresh(mapRef);
+  else setHexLayer(rows, DGGS.h3.adaptiveResolution);
+}
+
+function applySqlResult(rows: HexRow[], resolution: number, elapsedMs: number) {
+  sqlLock = true;
+  pendingSql = null;
+  holdFullTotalStatus = true;
+  requestSeq += 1;
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  activeSampleKey = editor ? sampleKeyFromSql(editor.value) : null;
+  clearHexLayer();
+  setHexLayer(rows, resolution);
+  setStatus(
+    `${rows.length.toLocaleString()} cells · ${Math.round(elapsedMs)}ms`,
   );
   syncFullLoadUi();
 }
 
-function cancelPendingFull() {
-  pendingFull = null;
-  setStatus("Rendering cancelled — use viewport zoom or pick a smaller full table");
+function paintSqlHighlight() {
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  const highlight = document.getElementById("sql-highlight");
+  if (!editor || !highlight) return;
+  highlight.innerHTML = highlightSqlHtml(editor.value);
+  highlight.scrollTop = editor.scrollTop;
+  highlight.scrollLeft = editor.scrollLeft;
+}
+
+function setSqlEditorValue(sql: string) {
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  if (!editor) return;
+  editor.value = sql;
+  paintSqlHighlight();
+  activeSampleKey = sampleKeyFromSql(sql);
   syncFullLoadUi();
 }
 
-function exitLockedFull() {
-  lockedFullRes = null;
-  pendingFull = null;
+function syncSqlEditor(resetText: boolean) {
+  const panel = document.getElementById("sql-panel");
+  if (panel) panel.hidden = !isDuckEngine();
+
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  if (editor && (resetText || !editor.value.trim())) {
+    setSqlEditorValue(defaultDggsSql(activeDggs));
+  } else {
+    paintSqlHighlight();
+  }
+
+  const runBtn = document.getElementById("sql-run") as HTMLButtonElement | null;
+  if (runBtn) {
+    runBtn.textContent = sqlBusy ? "Running…" : `Run ${sqlRunShortcut()}`;
+    runBtn.disabled = sqlBusy || !isDuckEngine();
+  }
+}
+
+async function loadSqlNative(sql: string): Promise<SqlPopRow[]> {
+  const remote = remoteNativeEndpoint();
+  const res =
+    (await postNativeApi("/api/population", { sql })) ??
+    (remote ? await postNativeApi(remote, { sql }) : null);
+  if (!res) {
+    throw new Error(
+      "Native DuckDB API is unreachable. Use DuckDB WASM, run the Node server, or set PUBLIC_NATIVE_API_URL.",
+    );
+  }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (Array.isArray(data.rows)) return data.rows as SqlPopRow[];
+  const population = (data.population ?? {}) as Record<string, number>;
+  const rows: SqlPopRow[] = [];
+  for (const hex in population) {
+    rows.push({ hex, population: Number(population[hex]) });
+  }
+  return rows;
+}
+
+async function runSqlQuery() {
+  if (!isDuckEngine() || sqlBusy) return;
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  const sql = (editor?.value ?? "").trim();
+  if (!sql) {
+    setStatus("Enter a SELECT query", "warn");
+    return;
+  }
+
+  sqlBusy = true;
+  pendingSql = null;
+  requestSeq += 1;
+  sqlLock = true;
   clearHexLayer();
+  syncSqlEditor(false);
   syncFullLoadUi();
-  if (mapRef) void refresh(mapRef);
-}
-
-function isPopResolution(n: number): boolean {
-  return DGGS[activeDggs].isResolution(n);
-}
-
-async function requestFullTable(resolution: number) {
-  if (activeEngine === "vector") return;
-  if (fullLoadBusy) return;
-  const cfg = DGGS[activeDggs];
-
-  // Adaptive button restores zoom-based loading (full coarse grid at low z)
-  if (resolution === cfg.adaptiveResolution) {
-    if (lockedFullRes == null && pendingFull == null) {
-      if (mapRef) void refresh(mapRef);
-      return;
-    }
-    exitLockedFull();
-    return;
-  }
-
-  // Clicking the active locked grid unlocks back to adaptive mode
-  if (lockedFullRes === resolution && pendingFull == null) {
-    exitLockedFull();
-    return;
-  }
-
-  fullLoadBusy = true;
-  pendingFull = null;
-  syncFullLoadUi();
-
+  setStatus("Running query…");
   try {
-    const cached = fullCache.get(fullCacheKey(resolution));
-    if (cached) {
-      if (cached.length > RENDER_WARNING_CELLS) {
-        pendingFull = { resolution, rows: cached, elapsedMs: 0 };
-        setStatus(`${gridLabel(resolution)} ready - confirm to render`);
-        syncFullLoadUi();
-        return;
-      }
-      applyFullTable(resolution, cached);
+    const t0 = performance.now();
+    const rows =
+      activeEngine === "native"
+        ? await loadSqlNative(sql)
+        : await runUserSql(sql);
+    const elapsedMs = performance.now() - t0;
+    const dggs = inferDggsFromSql(sql) ?? activeDggs;
+    const resolution = resolutionFromSqlRows(rows, dggs);
+    if (!rows.length) {
+      sqlLock = true;
+      sqlPaintDggs = dggs;
+      setHexLayer([], resolution);
+      setStatus("Query returned 0 cells", "warn");
       return;
     }
-
-    setStatus(`Loading full ${gridLabel(resolution)}…`);
-    const t0 = performance.now();
-    const { rows } = await loadPopulation({
-      resolution,
-      all: true,
-    });
-    const elapsedMs = performance.now() - t0;
-    fullCache.set(fullCacheKey(resolution), rows);
-
+    if (isAdaptiveH3Sql(sql)) {
+      applyAdaptiveH3Result(rows, elapsedMs);
+      return;
+    }
+    sqlPaintDggs = dggs;
     if (rows.length > RENDER_WARNING_CELLS) {
-      pendingFull = { resolution, rows, elapsedMs };
-      setStatus(`${gridLabel(resolution)} ready - confirm to render`);
+      pendingSql = { rows, resolution, elapsedMs };
+      setStatus("");
       syncFullLoadUi();
       return;
     }
-
-    applyFullTable(resolution, rows, elapsedMs);
+    applySqlResult(rows, resolution, elapsedMs);
   } catch (err) {
-    setStatus(
-      err instanceof Error ? err.message : `Failed to load ${gridLabel(resolution)}`,
-      "err",
-    );
+    clearSqlLock();
+    setStatus(err instanceof Error ? err.message : "Query failed", "err");
+    if (mapRef) void refresh(mapRef);
   } finally {
-    fullLoadBusy = false;
+    sqlBusy = false;
+    syncSqlEditor(false);
     syncFullLoadUi();
+    document.getElementById("sql-editor")?.blur();
+    if (mapRef) mapRef.getCanvas().style.cursor = "";
   }
 }
 
 let requestSeq = 0;
+let noneGeomRequestId = 0;
+
+function refreshAfterIdle(map: maplibregl.Map) {
+  map.once("idle", () => {
+    if (isNoneGeomEngine()) void refresh(map);
+  });
+}
+
+async function refreshNoneGeom(map: maplibregl.Map) {
+  if (!map.isStyleLoaded()) {
+    refreshAfterIdle(map);
+    return;
+  }
+  const currentRequest = ++noneGeomRequestId;
+  try {
+    ensureDeckOverlay(map);
+    removeNoneGeomLayers(map);
+    const mapBounds = map.getBounds();
+    const result = await updateNoneGeomPopulation({
+      west: mapBounds.getWest(),
+      south: mapBounds.getSouth(),
+      east: mapBounds.getEast(),
+      north: mapBounds.getNorth(),
+      mapZoom: map.getZoom(),
+    });
+    if (currentRequest !== noneGeomRequestId) return;
+    let resolution = 4;
+    if (result.rows[0]) {
+      try {
+        resolution = getResolution(result.rows[0].hex);
+      } catch {
+        resolution = 4;
+      }
+    }
+    if (result.skipped) {
+      setHexLayer([], resolution);
+      setStatus(`Zoom in to load H3 cells (${result.tileCount} tiles)`);
+      syncDggsUi();
+      return;
+    }
+    setHexLayer(result.rows, resolution);
+    paintedResolution = resolution;
+    setStatus(
+      `z${map.getZoom().toFixed(1)} · h3_${resolution} · ${result.tileCount} XYZ tiles`,
+    );
+    syncDggsUi();
+  } catch (err) {
+    if (currentRequest !== noneGeomRequestId) return;
+    setStatus(
+      err instanceof Error ? err.message : "Failed to render H3 cells",
+      "err",
+    );
+  }
+}
 
 async function refresh(map: maplibregl.Map) {
-  if (activeEngine === "vector") {
-    const zoom = map.getZoom();
-    const res = vectorResolutionForZoom(zoom);
-    setStatus(`z${zoom.toFixed(1)} · h3_${res} · PMTiles`);
+  if (isVectorEngine()) {
+    setStatus(viewStatus(map.getZoom(), vectorResolutionForZoom(map.getZoom())));
     syncDggsUi();
+    return;
+  }
+
+  if (isNoneGeomEngine()) {
+    await refreshNoneGeom(map);
     return;
   }
 
   const cfg = DGGS[activeDggs];
 
-  // Manual full-grid lock — don't clobber with viewport queries
-  if (lockedFullRes != null) {
-    const rows = fullCache.get(fullCacheKey(lockedFullRes));
-    if (rows) {
-      if (paintedResolution !== lockedFullRes) setHexLayer(rows, lockedFullRes);
-      setStatus(
-        `${gridLabel(lockedFullRes)} (locked) · ${rows.length.toLocaleString()} cells`,
-      );
-    }
-    return;
-  }
+  if (sqlLock) return;
 
   const zoom = map.getZoom();
   const resolution = cfg.resolutionForZoom(zoom);
@@ -448,59 +755,56 @@ async function refresh(map: maplibregl.Map) {
   try {
     if (zoom < cfg.fullTableZoom) {
       let rows = fullCache.get(fullCacheKey(cfg.adaptiveResolution)) ?? null;
+      let elapsedMs: number | undefined;
       if (!rows) {
         setStatus(
           `Loading full ${gridLabel(cfg.adaptiveResolution)}…`,
         );
+        const t0 = performance.now();
         const loaded = await loadPopulation({
           resolution: cfg.adaptiveResolution,
           all: true,
         });
-        if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
+        elapsedMs = performance.now() - t0;
+        if (seq !== requestSeq || sqlLock || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
           return;
         rows = loaded.rows;
         fullCache.set(fullCacheKey(cfg.adaptiveResolution), rows);
       }
+      if (sqlLock) return;
       if (paintedResolution !== cfg.adaptiveResolution) {
         setHexLayer(rows, cfg.adaptiveResolution);
       }
-      setStatus(
-        `z${zoom.toFixed(1)} · full ${gridLabel(cfg.adaptiveResolution)} · ${rows.length.toLocaleString()} cells`,
-      );
+      if (elapsedMs != null) {
+        announceFullTotal(cfg.adaptiveResolution, rows, elapsedMs);
+      } else if (!holdFullTotalStatus) {
+        setStatus(viewStatus(zoom, cfg.adaptiveResolution));
+      }
       syncFullLoadUi();
       return;
     }
+
+    holdFullTotalStatus = false;
 
     if (paintedResolution !== null && paintedResolution !== resolution) {
       clearHexLayer();
     }
 
-    const canvas = map.getCanvas();
-    const ul = map.unproject([0, 0]).toArray() as [number, number];
-    const lr = map
-      .unproject([canvas.width, canvas.height])
-      .toArray() as [number, number];
-    const bounds = boundsFromMapCorners(ul, lr);
+    const bounds = boundsFromLngLatBounds(map.getBounds());
 
-    setStatus(
-      `Querying viewport ∩ ${gridLabel(resolution)}…`,
-    );
-
-    const { rows, viewportIds } = await loadPopulation({
+    const { rows } = await loadPopulation({
       resolution,
       bounds,
     });
-    if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
+    if (seq !== requestSeq || sqlLock || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
       return;
 
     setHexLayer(rows, resolution);
 
-    setStatus(
-      `z${zoom.toFixed(1)} · ${gridLabel(resolution)} · ${viewportIds.toLocaleString()} viewport IDs · ${rows.length.toLocaleString()} matched`,
-    );
+    setStatus(viewStatus(zoom, resolution));
     syncFullLoadUi();
   } catch (err) {
-    if (seq !== requestSeq || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
+    if (seq !== requestSeq || sqlLock || activeDggs !== dggsAtStart || activeEngine !== engineAtStart)
       return;
     setStatus(
       err instanceof Error ? err.message : "Failed to load population",
@@ -510,17 +814,15 @@ async function refresh(map: maplibregl.Map) {
 }
 
 function syncVectorModeUi() {
-  const vector = activeEngine === "vector";
+  const tileMode = locksH3Tiles();
   const dggsSelect = document.getElementById("dggs") as HTMLSelectElement | null;
-  if (dggsSelect) dggsSelect.disabled = vector;
+  if (dggsSelect) dggsSelect.disabled = tileMode;
 
-  const fullLoad = document.querySelector<HTMLElement>(".full-load");
-  if (fullLoad) fullLoad.hidden = vector;
+  const samplesRow = document.getElementById("samples-row");
+  if (samplesRow) samplesRow.hidden = tileMode;
 
-  const help = document.getElementById("dggs-help");
-  if (help) {
-    help.innerHTML = vector ? VECTOR_HELP_HTML : DGGS[activeDggs].helpHtml;
-  }
+  const sqlPanel = document.getElementById("sql-panel");
+  if (sqlPanel) sqlPanel.hidden = !isDuckEngine();
 }
 
 function syncDggsUi() {
@@ -539,49 +841,68 @@ async function setActiveEngine(engine: PopEngine) {
     btn.classList.toggle("active", btn.dataset.engine === activeEngine);
   });
 
-  if (engine === "vector") {
+  if (locksH3Tiles()) {
     activeDggs = "h3";
-    pendingFull = null;
-    lockedFullRes = null;
-    requestSeq += 1;
-    clearHexLayer();
-    syncDggsUi();
-    if (mapRef && !(await applyMapStyle(mapRef))) void refresh(mapRef);
-    return;
+  }
+  if (mapRef) {
+    if (usesDeckOverlay()) {
+      ensureDeckOverlay(mapRef);
+    } else {
+      hideDeckOverlay(mapRef);
+    }
+    removeNoneGeomLayers(mapRef);
   }
 
-  pendingFull = null;
-  lockedFullRes = null;
+  pendingSql = null;
+  holdFullTotalStatus = false;
+  clearSqlLock();
   requestSeq += 1;
   clearHexLayer();
+  setSqlEditorValue(defaultDggsSql(activeDggs));
   syncDggsUi();
-  if (mapRef && !(await applyMapStyle(mapRef))) void refresh(mapRef);
+  syncSqlEditor(false);
+  if (!mapRef) return;
+  const restyled = await applyMapStyle(mapRef);
+  if (!restyled) void refresh(mapRef);
+  if (isNoneGeomEngine()) refreshAfterIdle(mapRef);
 }
 
 async function setActiveDggs(dggs: DggsId) {
-  if (activeEngine === "vector") return;
+  if (locksH3Tiles()) return;
   if (dggs === activeDggs) return;
   activeDggs = dggs;
-  pendingFull = null;
-  lockedFullRes = null;
+  pendingSql = null;
+  holdFullTotalStatus = false;
+  clearSqlLock();
   requestSeq += 1;
   clearHexLayer();
   syncDggsUi();
+  setSqlEditorValue(defaultDggsSql(dggs));
+  syncSqlEditor(false);
   if (mapRef) void refresh(mapRef);
+}
+
+function sampleTableSql(dggs: DggsId, res: number): string {
+  const col = DGGS[dggs].cellColumn;
+  return `SELECT ${col}, population
+FROM ${dggs}_${res}`;
 }
 
 function wireFullLoadControls() {
   document.querySelectorAll<HTMLButtonElement>("[data-full-res]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      const dggs = parseDggs(btn.dataset.dggs) ?? activeDggs;
       const res = Number(btn.dataset.fullRes);
-      if (isPopResolution(res)) void requestFullTable(res);
+      if (!Number.isInteger(res)) return;
+      setSqlEditorValue(sampleTableSql(dggs, res));
     });
   });
 
   document.getElementById("render-anyway")?.addEventListener("click", () => {
-    if (!pendingFull) return;
-    const { resolution, rows, elapsedMs } = pendingFull;
-    applyFullTable(resolution, rows, elapsedMs || undefined);
+    if (pendingSql) {
+      const { rows, resolution, elapsedMs } = pendingSql;
+      applySqlResult(rows, resolution, elapsedMs);
+    }
   });
 
   document.getElementById("render-cancel")?.addEventListener("click", () => {
@@ -614,6 +935,29 @@ function wireFullLoadControls() {
   }
   syncLegendRamp();
 
+  const editor = document.getElementById(
+    "sql-editor",
+  ) as HTMLTextAreaElement | null;
+  editor?.addEventListener("input", paintSqlHighlight);
+  editor?.addEventListener("scroll", paintSqlHighlight);
+  editor?.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void runSqlQuery();
+    }
+  });
+  document.getElementById("sql-run")?.addEventListener("click", () => {
+    void runSqlQuery();
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-sql-agg]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const dggs = parseDggs(btn.dataset.dggs) ?? activeDggs;
+      const sql = defaultAggregateSql(dggs);
+      setSqlEditorValue(sql);
+    });
+  });
+  syncSqlEditor(true);
+
   const hud = document.querySelector(".hud");
   const hideBtn = document.getElementById("hide-panel");
   const showBtn = document.getElementById("show-panel");
@@ -633,10 +977,9 @@ const INITIAL_CENTER: [number, number] = [105.85, 21.03];
 const INITIAL_ZOOM = 1;
 
 export async function initPopMap(container: HTMLElement) {
-  ensurePmtilesProtocol();
+  setNoneGeomProtocol(ensurePmtilesProtocol());
   wireFullLoadControls();
 
-  setStatus("Loading style…");
   let initialStyle;
   try {
     initialStyle = await loadGithubStyle(activeEngine === "vector", activePalette);
@@ -645,7 +988,7 @@ export async function initPopMap(container: HTMLElement) {
     return;
   }
 
-  loadedStyleKey = styleKey(activeEngine === "vector", activePalette);
+  loadedStyleKey = currentStyleKey();
   const map = new maplibregl.Map({
     container,
     style: initialStyle,
@@ -670,6 +1013,8 @@ export async function initPopMap(container: HTMLElement) {
   map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
   map.on("style.load", () => {
+    if (usesDeckOverlay()) ensureDeckOverlay(map);
+    else hideDeckOverlay(map);
     if (mapReady) void refresh(map);
   });
 
@@ -714,7 +1059,7 @@ export async function initPopMap(container: HTMLElement) {
     interleaved: false,
     layers: [],
     onHover: (info: PickingInfo<HexRow>) => {
-      if (activeEngine === "vector") return;
+      if (isVectorEngine()) return;
       if (!info.object || info.x == null || info.y == null) {
         hideTip();
         return;
@@ -724,13 +1069,19 @@ export async function initPopMap(container: HTMLElement) {
   });
 
   map.on("mousemove", (e) => {
-    if (activeEngine !== "vector") return;
-    const layers = VECTOR_LAYER_IDS.filter((id) => map.getLayer(id));
+    if (!isVectorEngine()) return;
+    const layers = [...VECTOR_LAYER_IDS].filter((id) => map.getLayer(id));
     if (!layers.length) {
       hideTip();
       return;
     }
-    const feat = map.queryRenderedFeatures(e.point, { layers })[0];
+    let feat: maplibregl.MapGeoJSONFeature | undefined;
+    try {
+      feat = map.queryRenderedFeatures(e.point, { layers })[0];
+    } catch {
+      hideTip();
+      return;
+    }
     if (!feat) {
       hideTip();
       return;
@@ -743,21 +1094,23 @@ export async function initPopMap(container: HTMLElement) {
     );
   });
   map.on("mouseout", () => {
-    if (activeEngine !== "vector") return;
+    if (!isVectorEngine()) return;
     hideTip();
   });
 
   map.on("load", () => {
     mapReady = true;
-    if (overlay) map.addControl(overlay);
+    if (usesDeckOverlay()) ensureDeckOverlay(map);
+    else hideDeckOverlay(map);
     void refresh(map);
   });
 
   let moveTimer: ReturnType<typeof setTimeout> | undefined;
-  map.on("moveend", () => {
+  const onViewChange = () => {
     clearTimeout(moveTimer);
     moveTimer = setTimeout(() => void refresh(map), 180);
-  });
+  };
+  map.on("moveend", onViewChange);
 
   return map;
 }

@@ -1,19 +1,12 @@
 import {
   FULL_TABLE_ZOOM as H3_FULL_TABLE_ZOOM,
   resolutionForZoom as h3ResolutionForZoom,
-  type H3PopResolution,
 } from "./h3Viewport";
 
 export type DggsId = "h3" | "a5" | "s2";
 
-export const DGGS_IDS = ["h3", "a5", "s2"] as const;
+export const DGGS_IDS = ["h3", "s2", "a5"] as const;
 export const DEFAULT_DGGS: DggsId = "h3";
-
-/** A5 resolutions with parquet under data/a5/ */
-export type A5PopResolution = 7;
-/** S2 resolutions with parquet under data/s2/ */
-export type S2PopResolution = 8;
-export type PopResolution = H3PopResolution | A5PopResolution | S2PopResolution;
 
 export function parseDggs(value: unknown): DggsId | null {
   return (DGGS_IDS as readonly string[]).includes(value as string)
@@ -30,7 +23,6 @@ type DggsConfig = {
   fullLoadResolutions: readonly number[];
   adaptiveResolution: number;
   fullTableZoom: number;
-  helpHtml: string;
   resolutionForZoom: (zoom: number) => number;
   isResolution: (n: number) => boolean;
   logMaxByRes: Record<number, number>;
@@ -46,8 +38,6 @@ export const DGGS: Record<DggsId, DggsConfig> = {
     fullLoadResolutions: [4, 5, 6],
     adaptiveResolution: 4,
     fullTableZoom: H3_FULL_TABLE_ZOOM,
-    helpHtml:
-      "<code>z0–8 → full h3_4</code> (cached)<br /><code>z9 → h3_5</code>, <code>z10 → h3_6</code><br /><code>z11 → h3_7</code>, <code>z12+ → h3_8</code>",
     resolutionForZoom: h3ResolutionForZoom,
     isResolution: (n) => n === 4 || n === 5 || n === 6 || n === 7 || n === 8,
     logMaxByRes: {
@@ -74,7 +64,6 @@ export const DGGS: Record<DggsId, DggsConfig> = {
     adaptiveResolution: 7,
     /** Only a5_7 is present — always the full cached table */
     fullTableZoom: 32,
-    helpHtml: "<code>z0+ → full a5_7</code> (cached)",
     resolutionForZoom: () => 7,
     isResolution: (n) => n === 7,
     logMaxByRes: {
@@ -93,7 +82,6 @@ export const DGGS: Record<DggsId, DggsConfig> = {
     adaptiveResolution: 8,
     /** Only s2_8 is present — always the full cached table */
     fullTableZoom: 32,
-    helpHtml: "<code>z0+ → full s2_8</code> (cached)",
     resolutionForZoom: () => 8,
     isResolution: (n) => n === 8,
     logMaxByRes: {

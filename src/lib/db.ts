@@ -7,6 +7,16 @@ import { Readable } from "node:stream";
 import { DGGS, type DggsId } from "./dggs";
 import { localDuckdbFile, localParquetFile } from "./dataDir";
 import { parquetFileName, serverParquetUrl, sqlQuoteId } from "./parquet";
+import {
+  isSafeSelectSql,
+  rowsFromQueryResult,
+  S2_CELL_TO_PARENT_MACRO,
+  HEX_TO_INT_MACRO,
+  sqlNeedsA5Extension,
+  sqlNeedsH3Extension,
+  tablesReferenced,
+  type SqlPopRow,
+} from "./sqlPlayground";
 
 const CACHE_DIR = path.join(os.tmpdir(), "pop-parquet");
 const downloads = new Map<string, Promise<string>>();
@@ -49,7 +59,7 @@ function run(conn: DuckConn, sql: string): Promise<void> {
 }
 
 function duckAlias(dggs: DggsId, res: number): string {
-  return `${dggs}_${res}`;
+  return `db_${dggs}_${res}`;
 }
 
 async function attachDuckdb(
@@ -239,4 +249,71 @@ export async function lookupPopulation(
     for (const row of rows) out[row.cell] = Number(row.population);
   }
   return out;
+}
+
+let nativeH3ExtReady = false;
+let nativeA5ExtReady = false;
+const nativeViews = new Set<string>();
+
+async function ensureNativeExtension(sql: string) {
+  const conn = await getConn();
+  if (sqlNeedsH3Extension(sql) && !nativeH3ExtReady) {
+    try {
+      await run(conn, "INSTALL h3 FROM community");
+      await run(conn, "LOAD h3");
+      nativeH3ExtReady = true;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `DuckDB h3 extension unavailable (${detail}). Aggregate queries need INSTALL h3 FROM community.`,
+      );
+    }
+  }
+  if (sqlNeedsA5Extension(sql) && !nativeA5ExtReady) {
+    try {
+      await run(conn, "INSTALL a5 FROM community");
+      await run(conn, "LOAD a5");
+      nativeA5ExtReady = true;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `DuckDB a5 extension unavailable (${detail}). Aggregate queries need INSTALL a5 FROM community.`,
+      );
+    }
+  }
+  await run(conn, HEX_TO_INT_MACRO);
+  await run(conn, S2_CELL_TO_PARENT_MACRO);
+}
+
+async function ensureNativeView(dggs: DggsId, res: number) {
+  const view = `${dggs}_${res}`;
+  if (nativeViews.has(view)) return;
+  const conn = await getConn();
+  const alias = await attachDuckdb(conn, dggs, res);
+  if (alias) {
+    await run(
+      conn,
+      `CREATE OR REPLACE VIEW ${view} AS SELECT * FROM ${alias}.pop`,
+    );
+  } else {
+    const src = (await parquetSource(dggs, res)).replace(/'/g, "''");
+    await run(
+      conn,
+      `CREATE OR REPLACE VIEW ${view} AS SELECT * FROM read_parquet('${src}')`,
+    );
+  }
+  nativeViews.add(view);
+}
+
+export async function runUserSql(sql: string): Promise<SqlPopRow[]> {
+  if (!isSafeSelectSql(sql)) {
+    throw new Error("Only SELECT / WITH queries are allowed");
+  }
+  await ensureNativeExtension(sql);
+  for (const table of tablesReferenced(sql)) {
+    await ensureNativeView(table.dggs, table.res);
+  }
+  const conn = await getConn();
+  const raw = await all<Record<string, unknown>>(conn, sql);
+  return rowsFromQueryResult(raw);
 }

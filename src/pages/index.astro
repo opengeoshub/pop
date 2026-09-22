@@ -31,8 +31,8 @@ export const prerender = true;
         z-index: 2;
         top: 14px;
         left: 14px;
-        max-width: min(300px, calc(100vw - 28px));
-        padding: 14px 16px;
+        width: min(320px, calc(100vw - 28px));
+        padding: 10px 10px 12px;
         border-radius: 10px;
         background: var(--panel);
         backdrop-filter: blur(10px);
@@ -81,20 +81,41 @@ export const prerender = true;
         font-variant-numeric: tabular-nums;
       }
       #status[data-tone="warn"] { color: #f0c674; }
-      #status[data-tone="err"] { color: #f07178; }
-      .full-load {
-        margin-top: 12px;
+      #status:empty { display: none; }
+      .chip-row {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 4px;
+        align-items: center;
+      }
+      .chip-row[hidden] {
+        display: none !important;
+      }
+      .chip-group,
+      .chip-row :global(.chip-group) {
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
         align-items: center;
+        min-width: 0;
+        flex: 1 1 auto;
       }
-      .full-load > span {
+      .hud-lead,
+      .chip-row :global(.hud-lead) {
+        flex: 0 0 3.4rem;
+        width: 3.4rem;
         font-size: 0.72rem;
+        font-weight: 400;
         color: var(--muted);
-        width: 100%;
+        white-space: nowrap;
       }
-      .full-load button {
+      .chip-row :global(span) {
+        font-size: 0.72rem;
+        font-weight: 400;
+        color: var(--muted);
+      }
+      .chip-row :global(button) {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.14);
         background: rgba(255,255,255,0.06);
@@ -104,16 +125,105 @@ export const prerender = true;
         font: 650 0.72rem/1 "IBM Plex Sans", system-ui, sans-serif;
         cursor: pointer;
       }
-      .full-load button:hover:not(:disabled) {
+      .chip-row :global(button:hover:not(:disabled)) {
         background: rgba(255,255,255,0.12);
       }
-      .full-load button:disabled {
+      .chip-row :global(button:disabled) {
         opacity: 0.45;
         cursor: not-allowed;
       }
-      .full-load button.active {
+      .chip-row :global(button.active) {
         border-color: var(--accent);
         color: var(--accent);
+      }
+      .sql-panel {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+      }
+      .sql-panel[hidden] {
+        display: none !important;
+      }
+      .sql-panel > label {
+        display: block;
+        font-size: 0.72rem;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .sql-editor-wrap {
+        position: relative;
+        width: 100%;
+        min-height: 108px;
+        border-radius: 6px;
+        border: 1px solid #d0d7de;
+        background: #fff;
+        overflow: hidden;
+      }
+      .sql-editor-wrap:focus-within {
+        outline: 1px solid var(--accent);
+      }
+      #sql-highlight,
+      #sql-editor {
+        margin: 0;
+        padding: 8px 9px;
+        border: none;
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        tab-size: 2;
+        white-space: pre;
+        box-sizing: border-box;
+      }
+      #sql-highlight {
+        position: absolute;
+        inset: 0;
+        overflow: auto;
+        pointer-events: none;
+        color: #1f2328;
+        background: transparent;
+      }
+      #sql-highlight :global(.sql-kw) { color: #cf222e; }
+      #sql-highlight :global(.sql-fn) { color: #00875f; }
+      #sql-highlight :global(.sql-agg) { color: #8250df; }
+      #sql-highlight :global(.sql-num) { color: #0550ae; }
+      #sql-highlight :global(.sql-str) { color: #0a3069; }
+      #sql-highlight :global(.sql-cmt) { color: #6e7781; font-style: italic; }
+      #sql-editor {
+        position: relative;
+        z-index: 1;
+        display: block;
+        width: 100%;
+        min-height: 108px;
+        height: 108px;
+        resize: vertical;
+        background: transparent;
+        color: transparent;
+        -webkit-text-fill-color: transparent;
+        caret-color: #1f2328;
+        outline: none;
+        overflow: auto;
+      }
+      .sql-run-row {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      #sql-run {
+        appearance: none;
+        border: none;
+        background: #00aa55;
+        color: #fff;
+        border-radius: 6px;
+        padding: 6px 12px;
+        font: 700 0.75rem/1 "IBM Plex Sans", system-ui, sans-serif;
+        cursor: pointer;
+      }
+      #sql-run:hover:not(:disabled) {
+        background: #00c262;
+      }
+      #sql-run:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
       #render-confirm {
         margin-top: 10px;
@@ -152,15 +262,40 @@ export const prerender = true;
         cursor: pointer;
       }
       .hud-tools {
-        margin-top: 12px;
+        margin-top: 10px;
         display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        flex-wrap: nowrap;
+        gap: 4px;
         align-items: center;
       }
       .hud-tools label {
         font-size: 0.72rem;
         color: var(--muted);
+        flex: 0 0 auto;
+      }
+      .hud-tools .hud-lead {
+        flex: 0 0 3.4rem;
+        width: 3.4rem;
+      }
+      .hud-tools select {
+        flex: 1 1 0;
+        min-width: 0;
+      }
+      #engine {
+        flex: 1 1 auto;
+        min-width: 118px;
+      }
+      #dggs {
+        flex: 0 0 4.1rem;
+        width: 4.1rem;
+        min-width: 4.1rem;
+      }
+      .hud-palette {
+        margin-top: 6px;
+      }
+      #palette {
+        flex: 1 1 auto;
+        min-width: 0;
       }
       #engine, #dggs, #palette {
         appearance: none;
@@ -299,27 +434,25 @@ export const prerender = true;
     <button type="button" id="show-panel" hidden>Info</button>
     <div class="hud">
       <h1 id="dggs-title">World population</h1>
-      <p id="dggs-help">
-        <code>z0–8 → full h3_4</code> (cached)<br />
-        <code>z9 → h3_5</code>, <code>z10 → h3_6</code><br />
-        <code>z11 → h3_7</code>, <code>z12+ → h3_8</code>
-      </p>
-      <div id="status">Initializing map...</div>
+      <div id="status"></div>
       <div class="hud-tools">
-        <label for="engine">Engine</label>
+        <label class="hud-lead" for="engine">Engine</label>
         <select id="engine" aria-label="Engine">
           <option value="wasm" selected>DuckDB WASM</option>
           <option value="native">DuckDB Native</option>
           <option value="vector">Vector tile</option>
+          <option value="none-geom">None-geom tile</option>
         </select>
-        <label for="dggs">DGGS</label>
+      </div>
+      <div class="hud-tools hud-palette">
+        <label class="hud-lead" for="dggs">DGGS</label>
         <select id="dggs" aria-label="DGGS">
           <option value="h3">H3</option>
-          <option value="a5">A5</option>
           <option value="s2">S2</option>
+          <option value="a5">A5</option>
         </select>
-        <label for="palette">Palette</label>
-        <select id="palette" aria-label="Color palette">
+        <label for="palette">Color ramp</label>
+        <select id="palette" aria-label="Color ramp">
           <option value="spectral">Spectral</option>
           <option value="magma">Magma</option>
           <option value="viridis">Viridis</option>
@@ -327,13 +460,28 @@ export const prerender = true;
           <option value="heat">Heat</option>
         </select>
       </div>
-      <div class="full-load">
-        <span>Load full grid:</span>
-        <button type="button" data-dggs="h3" data-full-res="4">h3_4</button>
-        <button type="button" data-dggs="h3" data-full-res="5">h3_5</button>
-        <button type="button" data-dggs="h3" data-full-res="6">h3_6</button>
-        <button type="button" data-dggs="a5" data-full-res="7" hidden>a5_7</button>
-        <button type="button" data-dggs="s2" data-full-res="8" hidden>s2_8</button>
+      <div id="samples-row" class="chip-row">
+        <span class="hud-lead">Samples</span>
+        <div class="chip-group">
+          <button type="button" data-sql-agg data-dggs="h3">h3_4 → h3_3</button>
+          <button type="button" data-sql-agg data-dggs="a5" hidden>a5_7 → a5_6</button>
+          <button type="button" data-sql-agg data-dggs="s2" hidden>s2_8 → s2_7</button>
+          <button type="button" data-dggs="h3" data-full-res="4">h3_4</button>
+          <button type="button" data-dggs="h3" data-full-res="5">h3_5</button>
+          <button type="button" data-dggs="h3" data-full-res="6">h3_6</button>
+          <button type="button" data-dggs="a5" data-full-res="7" hidden>a5_7</button>
+          <button type="button" data-dggs="s2" data-full-res="8" hidden>s2_8</button>
+        </div>
+      </div>
+      <div id="sql-panel" class="sql-panel">
+        <label for="sql-editor">SQL</label>
+        <div class="sql-editor-wrap">
+          <pre id="sql-highlight" aria-hidden="true"></pre>
+          <textarea id="sql-editor" spellcheck="false" wrap="off"></textarea>
+        </div>
+        <div class="sql-run-row">
+          <button type="button" id="sql-run">Run Ctrl+Enter</button>
+        </div>
       </div>
       <div id="render-confirm" hidden>
         <div id="render-warn"></div>

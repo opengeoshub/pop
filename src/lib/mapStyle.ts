@@ -1,4 +1,4 @@
-import type { StyleSpecification } from "maplibre-gl";
+import type { ExpressionSpecification, StyleSpecification } from "maplibre-gl";
 
 export type PaletteId = "spectral" | "magma" | "viridis" | "terrain" | "heat";
 
@@ -95,13 +95,14 @@ function githubStyleUrl(vector: boolean, palette: PaletteId): string {
 export async function loadGithubStyle(
   vector: boolean,
   palette: PaletteId,
+  options?: { globe?: boolean },
 ): Promise<StyleSpecification> {
   const res = await fetch(githubStyleUrl(vector, palette));
   if (!res.ok) {
     throw new Error(`Failed to load style ${res.status} ${res.statusText}`);
   }
   const style = (await res.json()) as StyleSpecification;
-  style.projection = { type: "globe" };
+  style.projection = { type: options?.globe === false ? "mercator" : "globe" };
   if (typeof style.sprite === "string") {
     style.sprite = rewriteVstylesUrl(style.sprite);
   }
@@ -109,4 +110,37 @@ export async function loadGithubStyle(
     style.glyphs = rewriteVstylesUrl(style.glyphs);
   }
   return style;
+}
+
+export function paletteFillColorExpression(
+  palette: PaletteId,
+  logMax: number,
+): ExpressionSpecification {
+  const colors = PALETTE_HEX[palette];
+  const last = Math.max(colors.length - 1, 1);
+  const stops: (string | number)[] = [];
+  for (let i = 0; i < colors.length; i++) {
+    stops.push(i / last, colors[i]);
+  }
+  return [
+    "interpolate",
+    ["linear"],
+    [
+      "min",
+      1,
+      [
+        "max",
+        0,
+        [
+          "/",
+          [
+            "log10",
+            ["max", ["coalesce", ["to-number", ["get", "population"]], 0], 1],
+          ],
+          logMax,
+        ],
+      ],
+    ],
+    ...stops,
+  ] as ExpressionSpecification;
 }
